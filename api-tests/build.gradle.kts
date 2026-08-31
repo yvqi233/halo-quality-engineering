@@ -20,6 +20,10 @@ dependencies {
 }
 
 tasks.withType<Test>().configureEach {
+    useJUnitPlatform()
+}
+
+tasks.named<Test>("test") {
     useJUnitPlatform {
         excludeTags("integration", "smoke")
     }
