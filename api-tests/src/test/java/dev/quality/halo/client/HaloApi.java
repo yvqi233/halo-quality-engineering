@@ -24,17 +24,23 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.KeyFactory;
-import java.security.PublicKey;
-import java.security.spec.X509EncodedKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.Base64;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -45,19 +51,25 @@ public final class HaloApi {
     private static final String CONTENT_API = "/apis/content.halo.run/v1alpha1";
     private static final String PUBLIC_CONTENT_API = "/apis/api.content.halo.run/v1alpha1";
     private static final String SECURITY_CONSOLE_API = "/apis/console.api.security.halo.run/v1alpha1";
+    private static final Path EVIDENCE_ROOT = Path.of("build", "evidence").toAbsolutePath().normalize();
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ConcurrentMap<Path, EvidenceWriter> EVIDENCE_WRITERS = new ConcurrentHashMap<>();
 
     private final URI baseUri;
     private final Credentials credentials;
-    private final Filter sessionAuthenticationFilter;
     private final Filter evidenceFilter;
+    private final Filter sessionAuthenticationFilter;
 
     public HaloApi(URI baseUri, Credentials credentials) {
+        this(baseUri, credentials, System.getProperty("qe.runId", "local"), System.getProperty("qe.testId", "unscoped"));
+    }
+
+    HaloApi(URI baseUri, Credentials credentials, String runId, String testId) {
         this.baseUri = Objects.requireNonNull(baseUri, "baseUri");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
-        this.sessionAuthenticationFilter = new SessionAuthenticationFilter(this.baseUri, this.credentials);
-        this.evidenceFilter = new RedactedEvidenceFilter(
-                System.getProperty("qe.runId", "local"), System.getProperty("qe.testId", "unscoped"));
+        EvidenceWriter writer = EVIDENCE_WRITERS.computeIfAbsent(evidenceDirectory(runId, testId), EvidenceWriter::new);
+        this.evidenceFilter = new RedactedEvidenceFilter(writer);
+        this.sessionAuthenticationFilter = new SessionAuthenticationFilter(this.baseUri, this.credentials, evidenceFilter);
     }
 
     public Credentials credentials() {
@@ -130,12 +142,24 @@ public final class HaloApi {
         return request().get(CONSOLE_API + "/users/-");
     }
 
-    public Response user(String name) {
-        return request().get(CONSOLE_API + "/users/{name}", name);
-    }
-
     public Response deleteUser(String name) {
         return request().delete("/api/v1alpha1/users/{name}", name);
+    }
+
+    Response genericUser(String name) {
+        return request().get("/api/v1alpha1/users/{name}", name);
+    }
+
+    static Path evidenceRoot() {
+        return EVIDENCE_ROOT;
+    }
+
+    static Path evidenceDirectory(String runId, String testId) {
+        Path directory = EVIDENCE_ROOT.resolve(safeSegment(runId)).resolve(safeSegment(testId)).normalize();
+        if (!directory.startsWith(EVIDENCE_ROOT)) {
+            throw new IllegalArgumentException("Evidence directory escapes the evidence root");
+        }
+        return directory;
     }
 
     private RequestSpecification request() {
@@ -147,8 +171,8 @@ public final class HaloApi {
                 .contentType("application/json")
                 .accept("application/json")
                 .config(RestAssured.config().redirect(RedirectConfig.redirectConfig().followRedirects(false)))
-                .filter(evidenceFilter)
-                .filter(sessionAuthenticationFilter);
+                .filter(sessionAuthenticationFilter)
+                .filter(evidenceFilter);
     }
 
     private static ArrayNode stringArray(ObjectNode parent, String field, Set<String> values) {
@@ -157,12 +181,24 @@ public final class HaloApi {
         return array;
     }
 
-    private static final class RedactedEvidenceFilter implements Filter {
-        private final Path directory;
-        private final AtomicLong sequence = new AtomicLong();
+    private static String safeSegment(String value) {
+        Objects.requireNonNull(value, "evidence segment");
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Evidence segment must not be blank");
+        }
+        for (String segment : value.replace('\\', '/').split("/", -1)) {
+            if (segment.equals(".") || segment.equals("..")) {
+                throw new IllegalArgumentException("Evidence segment must not contain dot segments");
+            }
+        }
+        return value.replaceAll("[^a-zA-Z0-9._-]", "-");
+    }
 
-        private RedactedEvidenceFilter(String runId, String testId) {
-            this.directory = Path.of("build", "evidence", safeSegment(runId), safeSegment(testId));
+    private static final class RedactedEvidenceFilter implements Filter {
+        private final EvidenceWriter writer;
+
+        private RedactedEvidenceFilter(EvidenceWriter writer) {
+            this.writer = writer;
         }
 
         @Override
@@ -170,20 +206,37 @@ public final class HaloApi {
                 FilterableRequestSpecification request,
                 FilterableResponseSpecification responseSpecification,
                 FilterContext context) {
-            long requestNumber = sequence.incrementAndGet();
             Response response = context.next(request, responseSpecification);
-            write(requestNumber, "request", requestEvidence(request));
-            write(requestNumber, "response", responseEvidence(response));
+            writer.record(request, response);
             return response;
         }
+    }
 
-        private void write(long requestNumber, String direction, ObjectNode evidence) {
+    private static final class EvidenceWriter {
+        private final Path directory;
+        private final String writerId = UUID.randomUUID().toString();
+        private final AtomicLong sequence = new AtomicLong();
+
+        private EvidenceWriter(Path directory) {
+            this.directory = directory;
+        }
+
+        private void record(FilterableRequestSpecification request, Response response) {
+            long attempt = sequence.incrementAndGet();
+            String attemptId = writerId + "-%020d".formatted(attempt);
+            write(attemptId, "request", requestEvidence(request));
+            write(attemptId, "response", responseEvidence(response));
+        }
+
+        private void write(String attemptId, String direction, ObjectNode evidence) {
             try {
                 Files.createDirectories(directory);
+                String filename = "%s-%s.json".formatted(attemptId, direction);
                 Files.writeString(
-                        directory.resolve("%03d-%s.json".formatted(requestNumber, direction)),
+                        directory.resolve(filename),
                         JSON.writerWithDefaultPrettyPrinter().writeValueAsString(evidence),
-                        StandardCharsets.UTF_8);
+                        StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE_NEW);
             } catch (IOException error) {
                 throw new UncheckedIOException("Unable to write redacted HTTP evidence", error);
             }
@@ -207,11 +260,11 @@ public final class HaloApi {
         }
 
         private static Map<String, List<String>> redactHeaders(List<io.restassured.http.Header> headers) {
-            Map<String, List<String>> values = new java.util.LinkedHashMap<>();
+            Map<String, List<String>> values = new LinkedHashMap<>();
             headers.forEach(header -> values.merge(
                     header.getName(), List.of(header.getValue()),
                     (existing, added) -> {
-                        java.util.ArrayList<String> combined = new java.util.ArrayList<>(existing);
+                        List<String> combined = new ArrayList<>(existing);
                         combined.addAll(added);
                         return List.copyOf(combined);
                     }));
@@ -237,10 +290,6 @@ public final class HaloApi {
                 throw new IllegalArgumentException("Unable to serialize HTTP evidence body", error);
             }
         }
-
-        private static String safeSegment(String value) {
-            return value.replaceAll("[^a-zA-Z0-9._-]", "-");
-        }
     }
 
     private static final class SessionAuthenticationFilter implements Filter {
@@ -249,11 +298,13 @@ public final class HaloApi {
 
         private final URI baseUri;
         private final Credentials credentials;
+        private final Filter retryEvidenceFilter;
         private volatile String cookie;
 
-        private SessionAuthenticationFilter(URI baseUri, Credentials credentials) {
+        private SessionAuthenticationFilter(URI baseUri, Credentials credentials, Filter retryEvidenceFilter) {
             this.baseUri = baseUri;
             this.credentials = credentials;
+            this.retryEvidenceFilter = retryEvidenceFilter;
         }
 
         @Override
@@ -265,13 +316,27 @@ public final class HaloApi {
                 request.header("Cookie", cookie);
             }
             Response response = context.next(request, responseSpecification);
-            if (requiresSession(response) && establishSession()) {
+            if (isAllowlistedMutation(request) && requiresSession(response) && establishSession()) {
                 return retry(request);
             }
             return response;
         }
 
-        private boolean requiresSession(Response response) {
+        private static boolean isAllowlistedMutation(FilterableRequestSpecification request) {
+            String method = request.getMethod();
+            String path = URI.create(request.getURI()).getPath();
+            return switch (method) {
+                case "POST" -> path.equals(CONSOLE_API + "/users")
+                        || path.matches(Pattern.quote(CONSOLE_API) + "/users/[^/]+/permissions")
+                        || path.equals(CONSOLE_API + "/posts")
+                        || path.matches(Pattern.quote(SECURITY_CONSOLE_API) + "/users/[^/]+/(disable|enable)");
+                case "PUT" -> path.matches(Pattern.quote(CONSOLE_API) + "/posts/[^/]+(?:/(publish|unpublish|recycle))?");
+                case "DELETE" -> path.matches("/api/v1alpha1/users/[^/]+");
+                default -> false;
+            };
+        }
+
+        private static boolean requiresSession(Response response) {
             return response.statusCode() == 302 && response.getHeader("Location") != null
                     && response.getHeader("Location").startsWith("/login");
         }
@@ -292,10 +357,9 @@ public final class HaloApi {
                 if (login.statusCode() != 200) {
                     return false;
                 }
-                String encryptedPassword = encryptPassword(login.body());
                 String form = form("_csrf", match(CSRF, login.body()))
                         + "&" + form("username", credentials.username())
-                        + "&" + form("password", encryptedPassword);
+                        + "&" + form("password", encryptPassword(login.body()));
                 HttpResponse<Void> authenticated = client.send(
                         HttpRequest.newBuilder(baseUri.resolve("/login"))
                                 .header("Content-Type", "application/x-www-form-urlencoded")
@@ -322,7 +386,8 @@ public final class HaloApi {
                     .contentType("application/json")
                     .accept("application/json")
                     .config(RestAssured.config().redirect(RedirectConfig.redirectConfig().followRedirects(false)))
-                    .header("Cookie", cookie);
+                    .header("Cookie", cookie)
+                    .filter(retryEvidenceFilter);
             if (request.getBody() != null) {
                 retry.body((Object) request.getBody());
             }

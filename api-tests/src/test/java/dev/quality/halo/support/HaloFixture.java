@@ -14,7 +14,6 @@ public final class HaloFixture implements AutoCloseable {
     private static final String API_VERSION = "v1alpha1";
     private static final String USERS = "users";
 
-    private final URI baseUri;
     private final RunIdentity runIdentity;
     private final ResourceLedger ledger;
     private final HaloApi admin;
@@ -25,10 +24,10 @@ public final class HaloFixture implements AutoCloseable {
     }
 
     public HaloFixture(URI baseUri, RunIdentity runIdentity) {
-        this.baseUri = Objects.requireNonNull(baseUri, "baseUri");
+        URI checkedBaseUri = Objects.requireNonNull(baseUri, "baseUri");
         this.runIdentity = Objects.requireNonNull(runIdentity, "runIdentity");
         this.ledger = new ResourceLedger();
-        this.admin = new HaloApi(this.baseUri, new Credentials("qe-admin", "HaloQE!2026"));
+        this.admin = new HaloApi(checkedBaseUri, new Credentials("qe-admin", "HaloQE!2026"));
     }
 
     public RoleUsers createRoles() {
@@ -36,14 +35,6 @@ public final class HaloFixture implements AutoCloseable {
         Credentials author = createUser("author", Set.of("role-template-post-author", "role-template-post-contributor"));
         Credentials readonly = createUser("readonly", Set.of());
         return new RoleUsers(adminCredentials, author, readonly);
-    }
-
-    public HaloApi admin() {
-        return admin;
-    }
-
-    public HaloApi api(Credentials credentials) {
-        return new HaloApi(baseUri, credentials);
     }
 
     public String unique(String logicalSuffix) {
