@@ -41,7 +41,7 @@ class HaloApiWireTest {
 
     @Test
     void sendsEveryRequiredOperationWithExactRoutesAndPayloads() throws Exception {
-        for (int index = 0; index < 15; index++) {
+        for (int index = 0; index < 26; index++) {
             server.enqueue(jsonResponse(200));
         }
         HaloApi api = api();
@@ -51,6 +51,10 @@ class HaloApiWireTest {
         api.disableUser("user-a");
         api.enableUser("user-a");
         api.draftPost("p1", "user-a", "Title", "title");
+        api.ownDraftPost("p2", "user-a", "Own title", "own-title");
+        api.ownPublishPost("p2");
+        api.ownPost("p2");
+        api.ownUpdatePost("p2", json.readTree("{\"metadata\":{\"name\":\"p2\",\"version\":2},\"spec\":{}}"));
         api.publishPost("has space");
         api.unpublishPost("p1");
         api.recyclePost("p1");
@@ -58,20 +62,32 @@ class HaloApiWireTest {
         api.publicPost("p1");
         api.headContent("p1");
         api.updatePost("p1", json.readTree("{\"metadata\":{\"version\":3}}"));
+        api.postsByName("p1");
+        api.publicPosts();
+        api.devicesFor("user-a");
+        api.snapshot("snapshot-1");
+        api.permalink(server.url("/archives/p1").toString());
         api.deleteExtension(new ResourceRef("content.halo.run", "v1alpha1", "posts", "p1"));
         api.currentUser();
+        api.unauthenticatedUser();
+        api.unauthenticatedDraftPost("p3", "user-a", "Missing auth", "missing-auth");
         api.deleteUser("user-a");
 
-        List<RecordedRequest> requests = take(15);
+        List<RecordedRequest> requests = take(26);
         assertThat(requests).extracting(RecordedRequest::getMethod).containsExactly(
-                "POST", "POST", "POST", "POST", "POST", "PUT", "PUT", "PUT", "GET", "GET", "GET", "PUT",
-                "DELETE", "GET", "DELETE");
+                "POST", "POST", "POST", "POST", "POST", "POST", "PUT", "GET", "PUT", "PUT", "PUT", "PUT",
+                "GET", "GET", "GET", "PUT", "GET", "GET", "GET", "GET", "GET", "DELETE", "GET", "GET", "POST",
+                "DELETE");
         assertThat(requests).extracting(RecordedRequest::getPath).containsExactly(
                 "/apis/api.console.halo.run/v1alpha1/users",
                 "/apis/api.console.halo.run/v1alpha1/users/user-a/permissions",
                 "/apis/console.api.security.halo.run/v1alpha1/users/user-a/disable",
                 "/apis/console.api.security.halo.run/v1alpha1/users/user-a/enable",
                 "/apis/api.console.halo.run/v1alpha1/posts",
+                "/apis/uc.api.content.halo.run/v1alpha1/posts",
+                "/apis/uc.api.content.halo.run/v1alpha1/posts/p2/publish",
+                "/apis/uc.api.content.halo.run/v1alpha1/posts/p2",
+                "/apis/uc.api.content.halo.run/v1alpha1/posts/p2",
                 "/apis/api.console.halo.run/v1alpha1/posts/has%20space/publish",
                 "/apis/api.console.halo.run/v1alpha1/posts/p1/unpublish",
                 "/apis/api.console.halo.run/v1alpha1/posts/p1/recycle",
@@ -79,8 +95,15 @@ class HaloApiWireTest {
                 "/apis/api.content.halo.run/v1alpha1/posts/p1",
                 "/apis/api.console.halo.run/v1alpha1/posts/p1/head-content",
                 "/apis/api.console.halo.run/v1alpha1/posts/p1",
+                "/apis/api.console.halo.run/v1alpha1/posts?fieldSelector=metadata.name%3D%3Dp1",
+                "/apis/api.content.halo.run/v1alpha1/posts?size=100",
+                "/apis/security.halo.run/v1alpha1/devices?fieldSelector=spec.principalName%3D%3Duser-a",
+                "/apis/content.halo.run/v1alpha1/snapshots/snapshot-1",
+                "/archives/p1",
                 "/apis/content.halo.run/v1alpha1/posts/p1",
                 "/apis/api.console.halo.run/v1alpha1/users/-",
+                "/apis/uc.api.halo.run/v1alpha1/users/-",
+                "/apis/api.console.halo.run/v1alpha1/posts",
                 "/api/v1alpha1/users/user-a");
 
         JsonNode user = json.readTree(requests.getFirst().getBody().readUtf8());
@@ -89,7 +112,7 @@ class HaloApiWireTest {
                  "password":"user-password","roles":["role-a","role-b"]}
                 """));
         assertThat(json.readTree(requests.get(1).getBody().readUtf8()))
-                .isEqualTo(json.readTree("{\"roleNames\":[\"role-a\",\"role-b\"]}"));
+                .isEqualTo(json.readTree("{\"roles\":[\"role-a\",\"role-b\"]}"));
 
         JsonNode post = json.readTree(requests.get(4).getBody().readUtf8());
         assertThat(post.at("/post/apiVersion").asText()).isEqualTo("content.halo.run/v1alpha1");
@@ -115,7 +138,36 @@ class HaloApiWireTest {
         assertThat(post.at("/content/raw").asText()).isEqualTo("<p>Title</p>");
         assertThat(post.at("/content/content").asText()).isEqualTo("<p>Title</p>");
         assertThat(post.at("/content/rawType").asText()).isEqualTo("HTML");
-        assertThat(json.readTree(requests.get(11).getBody().readUtf8()).at("/metadata/version").asInt()).isEqualTo(3);
+        JsonNode ownPost = json.readTree(requests.get(5).getBody().readUtf8());
+        assertThat(ownPost.at("/metadata/name").asText()).isEqualTo("p2");
+        assertThat(ownPost.at("/spec/title").asText()).isEqualTo("Own title");
+        assertThat(json.readTree(ownPost.at("/metadata/annotations/content.halo.run~1content-json").asText()))
+                .isEqualTo(json.readTree("{\"raw\":\"<p>Own title</p>\",\"content\":\"<p>Own title</p>\",\"rawType\":\"HTML\"}"));
+        assertThat(json.readTree(requests.get(15).getBody().readUtf8()).at("/metadata/version").asInt()).isEqualTo(3);
+        assertThat(requests.get(23).getHeader("Authorization")).isNull();
+        assertThat(requests.get(24).getHeader("Authorization")).isNull();
+        assertThat(requests.get(23).getHeader("X-Requested-With")).isEqualTo("XMLHttpRequest");
+    }
+
+    @Test
+    void establishesSessionBeforeProtectedIdentityAndAssertsPrincipalSurface() throws Exception {
+        String runId = "wire-" + UUID.randomUUID();
+        server.enqueue(loginPage());
+        server.enqueue(new MockResponse().setResponseCode(302).addHeader("Location", "/")
+                .addHeader("Set-Cookie", "SESSION=session-value; Path=/"));
+        server.enqueue(new MockResponse().setResponseCode(200)
+                .addHeader("Content-Type", "application/json")
+                .setBody("{\"name\":\"account\",\"passwordSet\":true}"));
+
+        HaloApi api = new HaloApi(server.url("/").uri(), new Credentials("account", "password-value"), runId, "identity");
+        api.authenticatedUser().then().statusCode(200).body("name", org.hamcrest.Matchers.equalTo("account"));
+
+        List<RecordedRequest> requests = take(3);
+        assertThat(requests).extracting(RecordedRequest::getPath)
+                .containsExactly("/login", "/login", "/apis/uc.api.halo.run/v1alpha1/users/-");
+        assertThat(requests.get(2).getHeader("Cookie")).isNotBlank();
+        assertThat(requests.get(2).getHeader("X-Requested-With")).isEqualTo("XMLHttpRequest");
+        assertThat(Files.list(HaloApi.evidenceDirectory(runId, "identity")).toList()).hasSize(2);
     }
 
     @Test

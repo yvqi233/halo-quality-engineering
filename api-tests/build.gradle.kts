@@ -32,6 +32,7 @@ tasks.named<Test>("test") {
 tasks.register<Test>("integrationTest") {
     group = "verification"
     description = "Runs tests tagged integration."
+    outputs.upToDateWhen { false }
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
     useJUnitPlatform {

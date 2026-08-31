@@ -40,6 +40,32 @@ public final class PostPayloads {
         return request;
     }
 
+    public static JsonNode ownDraft(String name, String owner, String title, String slug) {
+        ObjectNode request = (ObjectNode) draft(name, owner, title, slug);
+        ObjectNode post = (ObjectNode) request.path("post");
+        try {
+            post.withObject("metadata").withObject("annotations")
+                    .put("content.halo.run/content-json", JSON.writeValueAsString(request.path("content")));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException error) {
+            throw new IllegalArgumentException("Unable to serialize initial post content", error);
+        }
+        return post;
+    }
+
+    public static JsonNode update(
+            JsonNode existingPost, long contentVersion, String title, String raw, String content) {
+        ObjectNode request = JSON.createObjectNode();
+        ObjectNode post = existingPost.deepCopy();
+        post.withObject("spec").put("title", title);
+        request.set("post", post);
+        ObjectNode contentNode = request.putObject("content");
+        contentNode.put("raw", raw);
+        contentNode.put("content", content);
+        contentNode.put("rawType", "HTML");
+        contentNode.put("version", contentVersion);
+        return request;
+    }
+
     private static ArrayNode emptyArray(ObjectNode parent, String field) {
         return parent.putArray(field);
     }

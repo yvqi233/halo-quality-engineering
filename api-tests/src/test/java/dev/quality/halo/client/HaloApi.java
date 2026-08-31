@@ -51,6 +51,9 @@ public final class HaloApi {
     private static final String CONTENT_API = "/apis/content.halo.run/v1alpha1";
     private static final String PUBLIC_CONTENT_API = "/apis/api.content.halo.run/v1alpha1";
     private static final String SECURITY_CONSOLE_API = "/apis/console.api.security.halo.run/v1alpha1";
+    private static final String USER_CENTER_CONTENT_API = "/apis/uc.api.content.halo.run/v1alpha1";
+    private static final String USER_CENTER_IDENTITY_API = "/apis/uc.api.halo.run/v1alpha1/users/-";
+    private static final String XHR_HEADER = "X-Requested-With";
     private static final Path EVIDENCE_ROOT = Path.of("build", "evidence").toAbsolutePath().normalize();
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final ConcurrentMap<Path, EvidenceWriter> EVIDENCE_WRITERS = new ConcurrentHashMap<>();
@@ -58,7 +61,7 @@ public final class HaloApi {
     private final URI baseUri;
     private final Credentials credentials;
     private final Filter evidenceFilter;
-    private final Filter sessionAuthenticationFilter;
+    private final SessionAuthenticationFilter sessionAuthenticationFilter;
 
     public HaloApi(URI baseUri, Credentials credentials) {
         this(baseUri, credentials, System.getProperty("qe.runId", "local"), System.getProperty("qe.testId", "unscoped"));
@@ -88,7 +91,7 @@ public final class HaloApi {
 
     public Response grantRoles(String name, Set<String> roles) {
         ObjectNode request = JSON.createObjectNode();
-        stringArray(request, "roleNames", roles);
+        stringArray(request, "roles", roles);
         return request().body(request).post(CONSOLE_API + "/users/{name}/permissions", name);
     }
 
@@ -104,8 +107,23 @@ public final class HaloApi {
         return request().body(PostPayloads.draft(name, owner, title, slug)).post(CONSOLE_API + "/posts");
     }
 
+    public Response ownDraftPost(String name, String owner, String title, String slug) {
+        return request().header(XHR_HEADER, "XMLHttpRequest")
+                .body(PostPayloads.ownDraft(name, owner, title, slug))
+                .post(USER_CENTER_CONTENT_API + "/posts");
+    }
+
+    public Response unauthenticatedDraftPost(String name, String owner, String title, String slug) {
+        return unauthenticatedRequest().body(PostPayloads.draft(name, owner, title, slug)).post(CONSOLE_API + "/posts");
+    }
+
     public Response publishPost(String name) {
         return request().put(CONSOLE_API + "/posts/{name}/publish", name);
+    }
+
+    public Response ownPublishPost(String name) {
+        return request().header(XHR_HEADER, "XMLHttpRequest")
+                .put(USER_CENTER_CONTENT_API + "/posts/{name}/publish", name);
     }
 
     public Response unpublishPost(String name) {
@@ -120,6 +138,11 @@ public final class HaloApi {
         return request().get(CONTENT_API + "/posts/{name}", name);
     }
 
+    public Response ownPost(String name) {
+        return request().header(XHR_HEADER, "XMLHttpRequest")
+                .get(USER_CENTER_CONTENT_API + "/posts/{name}", name);
+    }
+
     public Response publicPost(String name) {
         return request().get(PUBLIC_CONTENT_API + "/posts/{name}", name);
     }
@@ -128,8 +151,34 @@ public final class HaloApi {
         return request().get(CONSOLE_API + "/posts/{name}/head-content", name);
     }
 
+    public Response snapshot(String name) {
+        return request().get(CONTENT_API + "/snapshots/{name}", name);
+    }
+
     public Response updatePost(String name, JsonNode request) {
         return request().body(request).put(CONSOLE_API + "/posts/{name}", name);
+    }
+
+    public Response ownUpdatePost(String name, JsonNode post) {
+        return request().header(XHR_HEADER, "XMLHttpRequest").body(post)
+                .put(USER_CENTER_CONTENT_API + "/posts/{name}", name);
+    }
+
+    public Response postsByName(String name) {
+        return request().queryParam("fieldSelector", "metadata.name==" + name).get(CONSOLE_API + "/posts");
+    }
+
+    public Response publicPosts() {
+        return request().queryParam("size", 100).get(PUBLIC_CONTENT_API + "/posts");
+    }
+
+    public Response devicesFor(String username) {
+        return request().queryParam("fieldSelector", "spec.principalName==" + username)
+                .get("/apis/security.halo.run/v1alpha1/devices");
+    }
+
+    public Response permalink(String permalink) {
+        return request().accept("text/html").get(permalink);
     }
 
     public Response deleteExtension(ResourceRef resource) {
@@ -140,6 +189,18 @@ public final class HaloApi {
 
     public Response currentUser() {
         return request().get(CONSOLE_API + "/users/-");
+    }
+
+    public Response authenticatedUser() {
+        return request().header(XHR_HEADER, "XMLHttpRequest").get(USER_CENTER_IDENTITY_API);
+    }
+
+    public Response unauthenticatedUser() {
+        return unauthenticatedRequest().get(USER_CENTER_IDENTITY_API);
+    }
+
+    public void resetSession() {
+        sessionAuthenticationFilter.clearSession();
     }
 
     public Response deleteUser(String name) {
@@ -168,6 +229,16 @@ public final class HaloApi {
                 .accept("application/json")
                 .config(RestAssured.config().redirect(RedirectConfig.redirectConfig().followRedirects(false)))
                 .filter(sessionAuthenticationFilter)
+                .filter(evidenceFilter);
+    }
+
+    private RequestSpecification unauthenticatedRequest() {
+        return RestAssured.given()
+                .baseUri(baseUri.toString())
+                .header(XHR_HEADER, "XMLHttpRequest")
+                .contentType("application/json")
+                .accept("application/json")
+                .config(RestAssured.config().redirect(RedirectConfig.redirectConfig().followRedirects(false)))
                 .filter(evidenceFilter);
     }
 
@@ -291,16 +362,20 @@ public final class HaloApi {
     private static final class SessionAuthenticationFilter implements Filter {
         private static final Pattern PUBLIC_KEY = Pattern.compile("const publicKey = \\\"([^\\\"]+)\\\"", Pattern.DOTALL);
         private static final Pattern CSRF = Pattern.compile("name=\\\"_csrf\\\" value=\\\"([^\\\"]+)\\\"");
+        private static final ConcurrentMap<SessionKey, String> SESSION_COOKIES = new ConcurrentHashMap<>();
 
         private final URI baseUri;
         private final Credentials credentials;
         private final Filter retryEvidenceFilter;
+        private final SessionKey sessionKey;
         private volatile String cookie;
 
         private SessionAuthenticationFilter(URI baseUri, Credentials credentials, Filter retryEvidenceFilter) {
             this.baseUri = baseUri;
             this.credentials = credentials;
             this.retryEvidenceFilter = retryEvidenceFilter;
+            this.sessionKey = new SessionKey(baseUri, credentials);
+            this.cookie = SESSION_COOKIES.get(sessionKey);
         }
 
         @Override
@@ -308,6 +383,12 @@ public final class HaloApi {
                 FilterableRequestSpecification request,
                 FilterableResponseSpecification responseSpecification,
                 FilterContext context) {
+            if (cookie == null) {
+                cookie = SESSION_COOKIES.get(sessionKey);
+            }
+            if (isProtectedIdentity(request) && cookie == null) {
+                establishSession();
+            }
             if (cookie != null) {
                 request.header("Cookie", cookie);
             }
@@ -325,11 +406,18 @@ public final class HaloApi {
                 case "POST" -> path.equals(CONSOLE_API + "/users")
                         || path.matches(Pattern.quote(CONSOLE_API) + "/users/[^/]+/permissions")
                         || path.equals(CONSOLE_API + "/posts")
+                        || path.equals(USER_CENTER_CONTENT_API + "/posts")
                         || path.matches(Pattern.quote(SECURITY_CONSOLE_API) + "/users/[^/]+/(disable|enable)");
-                case "PUT" -> path.matches(Pattern.quote(CONSOLE_API) + "/posts/[^/]+(?:/(publish|unpublish|recycle))?");
+                case "PUT" -> path.matches(Pattern.quote(CONSOLE_API) + "/posts/[^/]+(?:/(publish|unpublish|recycle))?")
+                        || path.matches(Pattern.quote(USER_CENTER_CONTENT_API) + "/posts/[^/]+(?:/publish)?");
                 case "DELETE" -> path.matches("/api/v1alpha1/users/[^/]+");
                 default -> false;
             };
+        }
+
+        private static boolean isProtectedIdentity(FilterableRequestSpecification request) {
+            return request.getMethod().equals("GET")
+                    && URI.create(request.getURI()).getPath().equals(USER_CENTER_IDENTITY_API);
         }
 
         private static boolean requiresSession(Response response) {
@@ -338,6 +426,10 @@ public final class HaloApi {
         }
 
         private synchronized boolean establishSession() {
+            if (cookie != null) {
+                return true;
+            }
+            cookie = SESSION_COOKIES.get(sessionKey);
             if (cookie != null) {
                 return true;
             }
@@ -362,7 +454,8 @@ public final class HaloApi {
                                 .POST(HttpRequest.BodyPublishers.ofString(form))
                                 .build(),
                         HttpResponse.BodyHandlers.discarding());
-                if (authenticated.statusCode() != 302) {
+                String location = authenticated.headers().firstValue("Location").orElse("");
+                if (authenticated.statusCode() != 302 || location.startsWith("/login")) {
                     return false;
                 }
                 List<String> values = cookies.get(baseUri, Map.of()).getOrDefault("Cookie", List.of());
@@ -370,9 +463,17 @@ public final class HaloApi {
                     return false;
                 }
                 cookie = String.join("; ", values);
+                SESSION_COOKIES.put(sessionKey, cookie);
                 return true;
             } catch (Exception error) {
                 return false;
+            }
+        }
+
+        private synchronized void clearSession() {
+            if (cookie != null) {
+                SESSION_COOKIES.remove(sessionKey, cookie);
+                cookie = null;
             }
         }
 
@@ -382,6 +483,7 @@ public final class HaloApi {
                     .contentType("application/json")
                     .accept("application/json")
                     .config(RestAssured.config().redirect(RedirectConfig.redirectConfig().followRedirects(false)))
+                    .header(XHR_HEADER, "XMLHttpRequest")
                     .header("Cookie", cookie)
                     .filter(retryEvidenceFilter);
             if (request.getBody() != null) {
@@ -413,5 +515,7 @@ public final class HaloApi {
         private static String form(String key, String value) {
             return URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8);
         }
+
+        private record SessionKey(URI baseUri, Credentials credentials) {}
     }
 }

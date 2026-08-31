@@ -5,6 +5,8 @@ import dev.quality.halo.client.HaloApi;
 import io.restassured.response.Response;
 import java.net.URI;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -17,6 +19,7 @@ public final class HaloFixture implements AutoCloseable {
     private final RunIdentity runIdentity;
     private final ResourceLedger ledger;
     private final HaloApi admin;
+    private final Set<String> trackedPosts = new LinkedHashSet<>();
 
     public HaloFixture() {
         this(URI.create(System.getProperty("halo.baseUrl", "http://127.0.0.1:8090")),
@@ -33,16 +36,27 @@ public final class HaloFixture implements AutoCloseable {
     public RoleUsers createRoles() {
         Credentials adminCredentials = admin.credentials();
         Credentials author = createUser("author", Set.of("role-template-post-author", "role-template-post-contributor"));
+        Credentials contributor = createUser("contributor", Set.of("role-template-post-contributor"));
         Credentials readonly = createUser("readonly", Set.of());
-        return new RoleUsers(adminCredentials, author, readonly);
+        return new RoleUsers(adminCredentials, author, contributor, readonly);
+    }
+
+    public Credentials adminCredentials() {
+        return admin.credentials();
     }
 
     public String unique(String logicalSuffix) {
         return ResourceRef.scoped(runIdentity, "content.halo.run", API_VERSION, "posts", logicalSuffix).name();
     }
 
+    public void trackPost(String name) {
+        trackedPosts.add(name);
+        ledger.record(new ResourceRef("content.halo.run", API_VERSION, "posts", name));
+    }
+
     @Override
     public void close() {
+        trackedPosts.forEach(this::waitForSettledPost);
         List<?> failures = ledger.cleanup(this::delete);
         if (!failures.isEmpty()) {
             throw new IllegalStateException("Fixture cleanup failed for " + failures.size() + " resource(s)");
@@ -65,11 +79,29 @@ public final class HaloFixture implements AutoCloseable {
         }
     }
 
+    private void waitForSettledPost(String name) {
+        long[] lastVersion = {Long.MIN_VALUE};
+        int[] stableObservations = {0};
+        Eventually.until(Duration.ofSeconds(15), Duration.ofMillis(100), () -> admin.consolePost(name), response -> {
+            if (response.statusCode() == 404) {
+                return true;
+            }
+            if (response.statusCode() != 200 || response.jsonPath().get("status.observedVersion") == null) {
+                return false;
+            }
+            long version = response.jsonPath().getLong("metadata.version");
+            long observed = response.jsonPath().getLong("status.observedVersion");
+            stableObservations[0] = version == observed && version == lastVersion[0] ? stableObservations[0] + 1 : 1;
+            lastVersion[0] = version;
+            return version == observed && stableObservations[0] >= 3;
+        });
+    }
+
     private static void requireSuccess(Response response, String operation) {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException(operation + " returned HTTP " + response.statusCode());
         }
     }
 
-    public record RoleUsers(Credentials admin, Credentials author, Credentials readonly) {}
+    public record RoleUsers(Credentials admin, Credentials author, Credentials contributor, Credentials readonly) {}
 }
