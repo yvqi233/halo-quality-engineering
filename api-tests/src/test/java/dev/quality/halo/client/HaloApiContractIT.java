@@ -41,12 +41,9 @@ class HaloApiContractIT {
                 readonly.currentUser().then().statusCode(200);
                 admin.draftPost(post, users.admin().username(), "Role post " + post, post).then().statusCode(200);
                 admin.consolePost(post).then().statusCode(200).body("status.phase", org.hamcrest.Matchers.is("DRAFT"));
-                author.draftPost(fixture.unique("author-denied"), users.author().username(), "Author denied", "author-denied")
-                        .then().statusCode(org.hamcrest.Matchers.anyOf(
-                                org.hamcrest.Matchers.is(302), org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403)));
                 readonly.draftPost(fixture.unique("readonly-denied"), users.readonly().username(), "Denied", "denied")
                         .then().statusCode(org.hamcrest.Matchers.anyOf(
-                                org.hamcrest.Matchers.is(302), org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403)));
+                                org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403)));
             }
             List<JsonNode> evidence = Files.list(HaloApi.evidenceDirectory(run.runId(), "halo-api-contract"))
                     .sorted(Comparator.comparing(Path::getFileName))

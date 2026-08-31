@@ -105,7 +105,10 @@ class HaloApiWireTest {
         assertThat(post.at("/post/spec/visible").asText()).isEqualTo("PUBLIC");
         assertThat(post.at("/post/spec/priority").asInt()).isZero();
         assertThat(post.at("/post/spec/excerpt/autoGenerate").asBoolean()).isTrue();
-        assertThat(post.at("/post/spec/excerpt/raw").asText()).isEmpty();
+        JsonNode excerptRaw = post.at("/post/spec/excerpt/raw");
+        assertThat(excerptRaw.isMissingNode()).isFalse();
+        assertThat(excerptRaw.isTextual()).isTrue();
+        assertThat(excerptRaw.textValue()).isEqualTo("");
         assertThat(post.at("/post/spec/categories").isArray()).isTrue();
         assertThat(post.at("/post/spec/tags").isArray()).isTrue();
         assertThat(post.at("/post/spec/htmlMetas").isArray()).isTrue();
