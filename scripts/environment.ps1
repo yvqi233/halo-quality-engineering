@@ -26,6 +26,21 @@ function Invoke-Compose {
     if ($LASTEXITCODE -ne 0) { throw "Docker Compose action failed: $($Arguments -join ' ')" }
 }
 
+function Assert-HaloServiceRunning {
+    if (-not (Test-Path -LiteralPath $lockFile)) {
+        throw 'Missing environment/image-lock.env. Run scripts/pin-images.ps1 first.'
+    }
+
+    $runningServices = @(& $dockerCli compose --project-name halo-qe --env-file $lockFile `
+        --file $composeFile ps --status running --services)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Unable to determine whether the halo-qe Halo service is running.'
+    }
+    if ($runningServices -notcontains 'halo') {
+        throw 'The Halo service is not running for Compose project halo-qe. Run scripts/environment.ps1 -Action Up first.'
+    }
+}
+
 function Get-SetupStatusCode {
     try {
         $response = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 `
@@ -60,6 +75,9 @@ function Wait-ForSetupEndpoint {
 }
 
 function Initialize-Halo {
+    Assert-HaloServiceRunning
+    Wait-ForSetupEndpoint
+
     $fields = [ordered]@{
         username = 'qe-admin'
         password = 'HaloQE!2026'
