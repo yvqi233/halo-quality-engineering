@@ -17,10 +17,12 @@ class ResourceLedgerTest {
 
         var failures = ledger.cleanup(ref -> {
             calls.add(ref.name());
-            if (ref.name().equals("post-b")) throw new IOException("delete failed");
+            throw new IOException("delete failed for " + ref.name());
         });
 
         assertThat(calls).containsExactly("post-b", "user-a");
-        assertThat(failures).extracting(CleanupFailure::resourceName).containsExactly("post-b");
+        assertThat(failures)
+                .extracting(CleanupFailure::resourceName)
+                .containsExactly("post-b", "user-a");
     }
 }
