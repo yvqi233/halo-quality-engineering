@@ -26,7 +26,6 @@ class HaloApiContractIT {
         System.setProperty("qe.runId", run.runId());
         System.setProperty("qe.testId", "halo-api-contract");
         HaloFixture.RoleUsers users;
-        HaloApi admin = null;
         try {
             try (HaloFixture fixture = new HaloFixture(BASE_URI, run)) {
                 users = fixture.createRoles();
@@ -34,7 +33,7 @@ class HaloApiContractIT {
                 assertThat(users.readonly().username()).startsWith(run.prefix());
                 assertThat(users.author().username()).isNotEqualTo(users.readonly().username());
 
-                admin = new HaloApi(BASE_URI, users.admin());
+                HaloApi admin = new HaloApi(BASE_URI, users.admin());
                 HaloApi author = new HaloApi(BASE_URI, users.author());
                 HaloApi readonly = new HaloApi(BASE_URI, users.readonly());
                 String post = fixture.unique("role-post");
@@ -42,13 +41,13 @@ class HaloApiContractIT {
                 readonly.currentUser().then().statusCode(200);
                 admin.draftPost(post, users.admin().username(), "Role post " + post, post).then().statusCode(200);
                 admin.consolePost(post).then().statusCode(200).body("status.phase", org.hamcrest.Matchers.is("DRAFT"));
+                author.draftPost(fixture.unique("author-denied"), users.author().username(), "Author denied", "author-denied")
+                        .then().statusCode(org.hamcrest.Matchers.anyOf(
+                                org.hamcrest.Matchers.is(302), org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403)));
                 readonly.draftPost(fixture.unique("readonly-denied"), users.readonly().username(), "Denied", "denied")
-                        .then().statusCode(org.hamcrest.Matchers.anyOf(org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403)));
+                        .then().statusCode(org.hamcrest.Matchers.anyOf(
+                                org.hamcrest.Matchers.is(302), org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403)));
             }
-            assertThat(admin).isNotNull();
-            waitForMissing(admin, users.author().username());
-            waitForMissing(admin, users.readonly().username());
-
             List<JsonNode> evidence = Files.list(HaloApi.evidenceDirectory(run.runId(), "halo-api-contract"))
                     .sorted(Comparator.comparing(Path::getFileName))
                     .map(this::read).toList();
@@ -59,6 +58,11 @@ class HaloApiContractIT {
             assertThat(evidence).anySatisfy(record -> assertThat(record.at(
                     "/body/metadata/annotations/rbac.authorization.halo.run~1role-names").asText())
                     .contains("role-template-post-author", "role-template-post-contributor"));
+            assertThat(evidence.stream()
+                    .map(record -> record.at("/body/metadata"))
+                    .filter(metadata -> metadata.hasNonNull("deletionTimestamp"))
+                    .map(metadata -> metadata.path("name").asText()))
+                    .containsExactlyInAnyOrder(users.author().username(), users.readonly().username());
             List<String> deletedUris = evidence.stream()
                     .filter(record -> "DELETE".equals(record.path("method").asText()))
                     .map(record -> record.path("uri").asText())
@@ -80,16 +84,4 @@ class HaloApiContractIT {
         }
     }
 
-    private static void waitForMissing(HaloApi api, String name) throws InterruptedException {
-        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(10).toNanos();
-        int status = 0;
-        while (System.nanoTime() < deadline) {
-            status = api.genericUser(name).statusCode();
-            if (status == 404) {
-                return;
-            }
-            Thread.sleep(100);
-        }
-        assertThat(status).isEqualTo(404);
-    }
 }

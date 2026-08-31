@@ -146,10 +146,6 @@ public final class HaloApi {
         return request().delete("/api/v1alpha1/users/{name}", name);
     }
 
-    Response genericUser(String name) {
-        return request().get("/api/v1alpha1/users/{name}", name);
-    }
-
     static Path evidenceRoot() {
         return EVIDENCE_ROOT;
     }

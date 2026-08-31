@@ -105,6 +105,7 @@ class HaloApiWireTest {
         assertThat(post.at("/post/spec/visible").asText()).isEqualTo("PUBLIC");
         assertThat(post.at("/post/spec/priority").asInt()).isZero();
         assertThat(post.at("/post/spec/excerpt/autoGenerate").asBoolean()).isTrue();
+        assertThat(post.at("/post/spec/excerpt/raw").asText()).isEmpty();
         assertThat(post.at("/post/spec/categories").isArray()).isTrue();
         assertThat(post.at("/post/spec/tags").isArray()).isTrue();
         assertThat(post.at("/post/spec/htmlMetas").isArray()).isTrue();
