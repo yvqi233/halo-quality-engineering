@@ -1,0 +1,19 @@
+{
+  "components": {
+    "schemas": {
+      "Post": {
+        "type": "object",
+        "properties": {
+          "spec": { "type": "string" },
+          "metadata": { "type": "object" }
+        },
+        "required": ["spec"]
+      }
+    }
+  },
+  "paths": {
+    "/posts": {
+      "get": {}
+    }
+  }
+}
