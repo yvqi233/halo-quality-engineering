@@ -24,7 +24,23 @@ const pointerSegment = (value) => escapePointerSegment(value);
 
 const sortedKeys = (value) => Object.keys(objectOrEmpty(value)).sort();
 
-const typeValue = (value) => typeof value === 'string' ? value : undefined;
+const normalizedTypes = (value) => {
+  if (typeof value === 'string') return [value];
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) {
+    return undefined;
+  }
+  return [...new Set(value)].sort();
+};
+
+const typesEqual = (left, right) => {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((entry, index) => entry === right[index]);
+};
+
+const typeLabel = (types) => {
+  if (types === undefined) return undefined;
+  return types.length === 1 ? types[0] : JSON.stringify(types);
+};
 
 /**
  * Finds backward-incompatible changes from a reviewed OpenAPI baseline.
@@ -81,10 +97,12 @@ export function findBreakingChanges(baseline, candidate) {
         continue;
       }
 
-      const before = typeValue(baselineProperty.type);
-      const after = typeValue(candidateProperty.type);
-      if (before !== after) {
+      const beforeTypes = normalizedTypes(baselineProperty.type);
+      const afterTypes = normalizedTypes(candidateProperty.type);
+      if (!typesEqual(beforeTypes, afterTypes)) {
         const change = { kind: 'TYPE_CHANGED', pointer: `${propertyPointer}/type` };
+        const before = typeLabel(beforeTypes);
+        const after = typeLabel(afterTypes);
         if (before !== undefined) change.before = before;
         if (after !== undefined) change.after = after;
         changes.push(change);
