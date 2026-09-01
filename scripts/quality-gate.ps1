@@ -279,6 +279,19 @@ function Write-Counts {
     Write-Utf8File -Path $Path -Value ($Counts | ConvertTo-Json -Depth 8)
 }
 
+function New-PhaseLifecycle {
+    return [ordered]@{
+        environment = [ordered]@{ attempted = $false; completed = $false; result = 'NOT_RUN' }
+        playwright = [ordered]@{ attempted = $false; completed = $false; result = 'NOT_RUN' }
+    }
+}
+
+function Write-L2Lifecycle {
+    param([string]$Path, [Collections.Specialized.OrderedDictionary]$Lifecycle)
+
+    Write-Utf8File -Path $Path -Value ($Lifecycle | ConvertTo-Json -Depth 8)
+}
+
 function Invoke-OpenApiComparison {
     param([string]$LayerArtifactRoot)
 
@@ -445,6 +458,13 @@ function Invoke-L2 {
     Remove-SafeTree $layerRoot
     New-Item -ItemType Directory -Force -Path $layerRoot | Out-Null
     Write-PlaywrightInventory $layerRoot
+    $lifecyclePath = Join-Path $layerRoot 'phases.json'
+    $l2Lifecycle = [ordered]@{
+        schemaVersion = 1
+        ordinary = New-PhaseLifecycle
+        expiry = New-PhaseLifecycle
+    }
+    Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
     $l2State = [pscustomobject]@{
         entries = @()
         excluded = @()
@@ -463,9 +483,21 @@ function Invoke-L2 {
         $l2State.ordinaryCount = $selected.Count
         $excludedPattern = @('@session-expiry') + @($l2State.excluded | Where-Object { $_ -ne 'E10' })
         Set-GateFailureKind 'PRODUCT'
-        Invoke-Playwright -ArtifactPath (Join-Path $layerRoot 'ordinary') `
-            -Arguments @('test', '--project=chromium', '--grep-invert', ($excludedPattern -join '|')) `
-            -Description 'L2 ordinary Chromium journeys'
+        $l2Lifecycle.ordinary.playwright.attempted = $true
+        $l2Lifecycle.ordinary.playwright.result = 'RUNNING'
+        Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+        try {
+            Invoke-Playwright -ArtifactPath (Join-Path $layerRoot 'ordinary') `
+                -Arguments @('test', '--project=chromium', '--grep-invert', ($excludedPattern -join '|')) `
+                -Description 'L2 ordinary Chromium journeys'
+            $l2Lifecycle.ordinary.playwright.result = 'PASS'
+        } catch {
+            $l2Lifecycle.ordinary.playwright.result = 'FAIL'
+            throw
+        } finally {
+            $l2Lifecycle.ordinary.playwright.completed = $true
+            Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+        }
         Set-GateFailureKind 'TEST_TOOL'
         $cases = @(Get-JUnitCases (Join-Path $layerRoot 'ordinary'))
         $expectedOrdinaryIds = @($selected) + @('I01', 'I02')
@@ -474,8 +506,18 @@ function Invoke-L2 {
         $l2State.infrastructureCount = 2
     }.GetNewClosure()
 
-    $ordinaryPhase = Invoke-LayerPhase -Name 'L2-ordinary' -SessionTimeout 'PT30M' `
-        -PhaseArtifactRoot (Join-Path $layerRoot 'ordinary-phase') -Body $ordinaryBody
+    $ordinaryPhase = $null
+    $l2Lifecycle.ordinary.environment.attempted = $true
+    $l2Lifecycle.ordinary.environment.result = 'RUNNING'
+    Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+    try {
+        $ordinaryPhase = Invoke-LayerPhase -Name 'L2-ordinary' -SessionTimeout 'PT30M' `
+            -PhaseArtifactRoot (Join-Path $layerRoot 'ordinary-phase') -Body $ordinaryBody
+    } finally {
+        $l2Lifecycle.ordinary.environment.completed = $null -ne $ordinaryPhase
+        $l2Lifecycle.ordinary.environment.result = if ($null -eq $ordinaryPhase) { 'FAIL' } else { $ordinaryPhase.result }
+        Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+    }
     $phases = [Collections.Generic.List[object]]::new()
     [void]$phases.Add($ordinaryPhase)
 
@@ -484,17 +526,39 @@ function Invoke-L2 {
             param($phaseRoot)
 
             Set-GateFailureKind 'PRODUCT'
-            Invoke-Playwright -ArtifactPath (Join-Path $layerRoot 'expiry') `
-                -Arguments @('test', '--project=chromium', '--grep', '@session-expiry', '--no-deps') `
-                -Description 'L2 E10 Chromium journey'
+            $l2Lifecycle.expiry.playwright.attempted = $true
+            $l2Lifecycle.expiry.playwright.result = 'RUNNING'
+            Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+            try {
+                Invoke-Playwright -ArtifactPath (Join-Path $layerRoot 'expiry') `
+                    -Arguments @('test', '--project=chromium', '--grep', '@session-expiry', '--no-deps') `
+                    -Description 'L2 E10 Chromium journey'
+                $l2Lifecycle.expiry.playwright.result = 'PASS'
+            } catch {
+                $l2Lifecycle.expiry.playwright.result = 'FAIL'
+                throw
+            } finally {
+                $l2Lifecycle.expiry.playwright.completed = $true
+                Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+            }
             Set-GateFailureKind 'TEST_TOOL'
             $cases = @(Get-JUnitCases (Join-Path $layerRoot 'expiry'))
             Assert-ExactCaseInventory -Cases $cases -ExpectedIds @('E10') `
                 -PrefixPattern 'E\d{2}' -Description 'L2 expiry journey'
             $l2State.expiryCount = 1
         }.GetNewClosure()
-        $expiryPhase = Invoke-LayerPhase -Name 'L2-expiry' -SessionTimeout 'PT5S' `
-            -PhaseArtifactRoot (Join-Path $layerRoot 'expiry-phase') -Body $expiryBody
+        $expiryPhase = $null
+        $l2Lifecycle.expiry.environment.attempted = $true
+        $l2Lifecycle.expiry.environment.result = 'RUNNING'
+        Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+        try {
+            $expiryPhase = Invoke-LayerPhase -Name 'L2-expiry' -SessionTimeout 'PT5S' `
+                -PhaseArtifactRoot (Join-Path $layerRoot 'expiry-phase') -Body $expiryBody
+        } finally {
+            $l2Lifecycle.expiry.environment.completed = $null -ne $expiryPhase
+            $l2Lifecycle.expiry.environment.result = if ($null -eq $expiryPhase) { 'FAIL' } else { $expiryPhase.result }
+            Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+        }
         [void]$phases.Add($expiryPhase)
     }
 

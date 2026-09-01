@@ -58,6 +58,92 @@ function Add-L1Requirements {
     Add-EnvironmentRequirements $Requirements 'artifacts/quality-gate/L1/environment'
 }
 
+function Test-NonEmptyArtifactFile {
+    param([string]$Path)
+
+    return (Test-Path -LiteralPath $Path -PathType Leaf) -and (Get-Item -LiteralPath $Path).Length -gt 0
+}
+
+function Test-LifecycleStage {
+    param([object]$Stage)
+
+    if ($null -eq $Stage -or $Stage.attempted -isnot [bool] -or $Stage.completed -isnot [bool]) {
+        return $false
+    }
+    if (-not $Stage.attempted) {
+        return -not $Stage.completed -and $Stage.result -eq 'NOT_RUN'
+    }
+    return $Stage.completed -and $Stage.result -in 'PASS', 'FAIL'
+}
+
+function Test-RetainedPhaseMedia {
+    param([string]$RepositoryRoot, [string]$ManifestRelativePath, [string]$Phase)
+
+    $manifestPath = Join-Path $RepositoryRoot $ManifestRelativePath
+    if (-not (Test-NonEmptyArtifactFile $manifestPath)) { return $false }
+    $phasePrefix = "artifacts/quality-gate/L2/$Phase/"
+    $entries = @(Get-Content -LiteralPath $manifestPath |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -and $_ -ne 'NONE_RETAINED' -and $_.StartsWith($phasePrefix, [StringComparison]::OrdinalIgnoreCase) })
+    if ($entries.Count -eq 0) { return $false }
+
+    $root = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd([IO.Path]::DirectorySeparatorChar) +
+        [IO.Path]::DirectorySeparatorChar
+    foreach ($entry in $entries) {
+        $resolved = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot $entry))
+        if (-not $resolved.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-NonEmptyArtifactFile $resolved)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Add-L2PhaseRequirements {
+    param(
+        [Collections.Generic.List[object]]$Requirements,
+        [Collections.Generic.List[string]]$ContractFailures,
+        [string]$RepositoryRoot,
+        [ValidateSet('ordinary', 'expiry')][string]$Phase,
+        [object]$Lifecycle
+    )
+
+    $environmentValid = Test-LifecycleStage $Lifecycle.environment
+    $playwrightValid = Test-LifecycleStage $Lifecycle.playwright
+    if (-not $environmentValid -or -not $playwrightValid -or
+        ($Lifecycle.playwright.attempted -and -not $Lifecycle.environment.attempted)) {
+        [void]$ContractFailures.Add("artifacts/quality-gate/L2/phases.json (valid $Phase lifecycle)")
+    }
+    if ($Lifecycle.environment.attempted) {
+        Add-EnvironmentRequirements $Requirements "artifacts/quality-gate/L2/$Phase-phase/environment"
+    }
+    if (-not $Lifecycle.playwright.attempted) { return }
+
+    $artifactRoot = "artifacts/quality-gate/L2/$Phase"
+    $markerRelativePath = "$artifactRoot/SANITIZATION_FAILED.txt"
+    $markerPath = Join-Path $RepositoryRoot $markerRelativePath
+    $sanitizerBlocked = Test-NonEmptyArtifactFile $markerPath
+    if ($sanitizerBlocked) {
+        Add-ArtifactRequirement $Requirements File $markerRelativePath
+        if ($Lifecycle.playwright.result -ne 'FAIL') {
+            [void]$ContractFailures.Add("$markerRelativePath (failed Playwright publication)")
+        }
+        return
+    }
+
+    Add-ArtifactRequirement $Requirements File "$artifactRoot/junit.xml"
+    Add-ArtifactRequirement $Requirements File "$artifactRoot/html-report/index.html"
+    if ($Lifecycle.playwright.result -eq 'PASS') { return }
+
+    foreach ($kind in @('trace', 'video')) {
+        $manifest = "artifacts/quality-gate/L2/manifests/$kind-files.txt"
+        if (-not (Test-RetainedPhaseMedia -RepositoryRoot $RepositoryRoot `
+                -ManifestRelativePath $manifest -Phase $Phase)) {
+            [void]$ContractFailures.Add("$manifest (retained $Phase failure evidence)")
+        }
+    }
+}
+
 function Add-L2Requirements {
     param(
         [Collections.Generic.List[object]]$Requirements,
@@ -67,19 +153,16 @@ function Add-L2Requirements {
 
     foreach ($path in @(
         'artifacts/quality-gate/L2/counts.json',
+        'artifacts/quality-gate/L2/phases.json',
         'artifacts/quality-gate/L2/quarantine.json',
         'artifacts/quality-gate/L2/quarantine.yaml',
         'artifacts/quality-gate/L2/manifests/report-files.txt',
         'artifacts/quality-gate/L2/manifests/trace-files.txt',
         'artifacts/quality-gate/L2/manifests/video-files.txt',
-        'artifacts/quality-gate/L2/ordinary/junit.xml',
-        'artifacts/quality-gate/L2/ordinary/html-report/index.html',
         'artifacts/quality-gate/summary.jsonl'
     )) {
         Add-ArtifactRequirement $Requirements File $path
     }
-    Add-EnvironmentRequirements $Requirements 'artifacts/quality-gate/L2/ordinary-phase/environment'
-
     $countsRelativePath = 'artifacts/quality-gate/L2/counts.json'
     $countsPath = Join-Path $RepositoryRoot $countsRelativePath
     if (Test-Path -LiteralPath $countsPath -PathType Leaf) {
@@ -89,17 +172,23 @@ function Add-L2Requirements {
                 $counts.expiryJourneys -notin 0, 1) {
                 throw 'count values are outside the L2 contract'
             }
-            if ($counts.expiryJourneys -eq 1) {
-                foreach ($path in @(
-                    'artifacts/quality-gate/L2/expiry/junit.xml',
-                    'artifacts/quality-gate/L2/expiry/html-report/index.html'
-                )) {
-                    Add-ArtifactRequirement $Requirements File $path
-                }
-                Add-EnvironmentRequirements $Requirements 'artifacts/quality-gate/L2/expiry-phase/environment'
-            }
         } catch {
             [void]$ContractFailures.Add("$countsRelativePath (valid L2 count contract)")
+        }
+    }
+
+    $lifecycleRelativePath = 'artifacts/quality-gate/L2/phases.json'
+    $lifecyclePath = Join-Path $RepositoryRoot $lifecycleRelativePath
+    if (Test-Path -LiteralPath $lifecyclePath -PathType Leaf) {
+        try {
+            $lifecycle = Get-Content -Raw -LiteralPath $lifecyclePath | ConvertFrom-Json
+            if ($lifecycle.schemaVersion -ne 1 -or $null -eq $lifecycle.ordinary -or $null -eq $lifecycle.expiry) {
+                throw 'unsupported lifecycle document'
+            }
+            Add-L2PhaseRequirements $Requirements $ContractFailures $RepositoryRoot ordinary $lifecycle.ordinary
+            Add-L2PhaseRequirements $Requirements $ContractFailures $RepositoryRoot expiry $lifecycle.expiry
+        } catch {
+            [void]$ContractFailures.Add("$lifecycleRelativePath (valid lifecycle document)")
         }
     }
 }
@@ -126,7 +215,7 @@ function Get-MissingQualityGateArtifacts {
         $resolved = Join-Path $RepositoryRoot $requirement.Path
         $present = switch ($requirement.Type) {
             'File' {
-                (Test-Path -LiteralPath $resolved -PathType Leaf) -and (Get-Item -LiteralPath $resolved).Length -gt 0
+                Test-NonEmptyArtifactFile $resolved
             }
             'Glob' {
                 @(Get-ChildItem -Path $resolved -File -ErrorAction SilentlyContinue |

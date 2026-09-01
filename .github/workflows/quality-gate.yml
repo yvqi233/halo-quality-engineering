@@ -313,6 +313,7 @@ jobs:
           name: l2-gate-metadata
           path: |
             artifacts/quality-gate/L2/counts.json
+            artifacts/quality-gate/L2/phases.json
             artifacts/quality-gate/L2/quarantine.json
             artifacts/quality-gate/L2/quarantine.yaml
             artifacts/quality-gate/summary.jsonl

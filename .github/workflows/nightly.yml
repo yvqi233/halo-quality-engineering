@@ -138,6 +138,7 @@ jobs:
           name: nightly-gate-metadata
           path: |
             artifacts/quality-gate/**/counts.json
+            artifacts/quality-gate/L2/phases.json
             artifacts/quality-gate/**/quarantine.yaml
             artifacts/quality-gate/summary.jsonl
           if-no-files-found: error

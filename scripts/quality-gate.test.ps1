@@ -130,6 +130,7 @@ Assert-Match $runner 'PT5S' 'E10 needs its own short-lived environment.'
 Assert-Match $runner 'collect-evidence\.ps1' 'Layer failures must collect redacted evidence.'
 Assert-Match $runner 'cleanup failed:[\s\S]*?Set-GateFailureKind ''TEST_TOOL''' 'Playwright cleanup failures must be classified as test-tool failures.'
 Assert-Match $runner 'SANITIZATION_FAILED\.txt' 'Playwright sanitizer marker classification is missing.'
+Assert-Match $runner 'phases\.json' 'L2 must persist phase lifecycle facts independently of successful counts.'
 Assert-Match $runner "environment\.ps1.*-Action Down" 'Every layer phase must tear down.'
 Assert-Ordered $runner @('Invoke-GateBody', '& $collectorScript', '-Action Down') 'Evidence must run after the test body and before final teardown.'
 Assert-Match $runner "\[ordered\]@\{\s*layer\s*=.*\s*result\s*=.*\s*durationSeconds\s*=.*\s*failureKind\s*=.*\s*artifactName\s*=" 'Summary schema is incomplete or reordered.'
@@ -172,6 +173,7 @@ Assert-Match $prWorkflow 'l1-api-evidence' 'L1 API evidence artifact name is mis
 Assert-Match $prWorkflow 'l2-playwright-report' 'L2 report artifact name is missing.'
 Assert-Match $prWorkflow 'l2-playwright-traces' 'L2 trace artifact name is missing.'
 Assert-Match $prWorkflow 'l2-playwright-videos' 'L2 video artifact name is missing.'
+Assert-Match $prWorkflow 'artifacts/quality-gate/L2/phases\.json' 'L2 lifecycle metadata must be uploaded.'
 Assert-Match $prWorkflow 'evidence-upload' 'Test and evidence-upload summary rows must be separate.'
 foreach ($layerName in @('L0', 'L1', 'L2')) {
     Assert-Match $prWorkflow "Validate $layerName artifact completeness[\s\S]*?if:\s+always\(\)[\s\S]*?continue-on-error:\s+true[\s\S]*?quality-gate-preflight\.ps1 -Layer $layerName" `
@@ -187,6 +189,7 @@ Assert-Match $nightlyWorkflow '-QuarantineMode Nightly' 'Nightly must execute qu
 Assert-Match $nightlyWorkflow 'Validate nightly artifact completeness[\s\S]*?if:\s+always\(\)[\s\S]*?continue-on-error:\s+true[\s\S]*?quality-gate-preflight\.ps1 -Layer All' `
     'Nightly must run a non-blocking completeness preflight before unconditional uploads.'
 Assert-Match $nightlyWorkflow 'L3-evidence-preflight' 'Nightly preflight needs its own Summary row.'
+Assert-Match $nightlyWorkflow 'artifacts/quality-gate/L2/phases\.json' 'Nightly lifecycle metadata must be uploaded.'
 Assert-Match $nightlyWorkflow 'artifacts/quality-gate/L0/quarantine\.yaml' 'Nightly summary must use generated validated quarantine evidence.'
 Assert-Match $nightlyWorkflow 'validation unavailable' 'Nightly summary must identify unavailable validation.'
 Assert-True (-not $nightlyWorkflow.Contains('Get-Content -Raw docs/quarantine.yaml')) `
@@ -211,6 +214,62 @@ try {
         'A summary file must not mask missing L0 OpenAPI evidence.'
 } finally {
     Remove-Item -LiteralPath $summaryOnlyRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$failedL2Root = Join-Path ([IO.Path]::GetTempPath()) "halo-gate-failed-l2-$([Guid]::NewGuid().ToString('N'))"
+try {
+    $l2Root = Join-Path $failedL2Root 'artifacts/quality-gate/L2'
+    $manifestRoot = Join-Path $l2Root 'manifests'
+    New-Item -ItemType Directory -Force -Path $manifestRoot | Out-Null
+    Set-Content -LiteralPath (Join-Path $l2Root 'counts.json') -Value '{"ordinaryJourneys":0,"expiryJourneys":0}'
+    Set-Content -LiteralPath (Join-Path $manifestRoot 'report-files.txt') -Value 'NONE_RETAINED'
+    Set-Content -LiteralPath (Join-Path $manifestRoot 'trace-files.txt') -Value 'NONE_RETAINED'
+    Set-Content -LiteralPath (Join-Path $manifestRoot 'video-files.txt') -Value 'NONE_RETAINED'
+
+    $notRun = [ordered]@{
+        environment = [ordered]@{ attempted = $false; completed = $false; result = 'NOT_RUN' }
+        playwright = [ordered]@{ attempted = $false; completed = $false; result = 'NOT_RUN' }
+    }
+    $failed = [ordered]@{
+        environment = [ordered]@{ attempted = $true; completed = $true; result = 'FAIL' }
+        playwright = [ordered]@{ attempted = $true; completed = $true; result = 'FAIL' }
+    }
+    $expiryFailedLifecycle = [ordered]@{ schemaVersion = 1; ordinary = $notRun; expiry = $failed }
+    Set-Content -LiteralPath (Join-Path $l2Root 'phases.json') `
+        -Value ($expiryFailedLifecycle | ConvertTo-Json -Depth 8)
+    $expiryFailedMissing = @(Get-MissingQualityGateArtifacts -RequestedLayer L2 -RepositoryRoot $failedL2Root)
+    Assert-True ($expiryFailedMissing -contains 'artifacts/quality-gate/L2/expiry/junit.xml') `
+        'Attempted failed expiry must require JUnit even when expiryJourneys remains zero.'
+    Assert-True ($expiryFailedMissing -contains 'artifacts/quality-gate/L2/expiry/html-report/index.html') `
+        'Attempted failed expiry must require its HTML report.'
+    Assert-True ($expiryFailedMissing -contains 'artifacts/quality-gate/L2/expiry-phase/environment/docker-ps.txt') `
+        'Attempted expiry environment must require environment evidence.'
+    Assert-True ($expiryFailedMissing -contains 'artifacts/quality-gate/L2/manifests/trace-files.txt (retained expiry failure evidence)') `
+        'NONE_RETAINED must not satisfy failed expiry trace evidence.'
+    Assert-True ($expiryFailedMissing -contains 'artifacts/quality-gate/L2/manifests/video-files.txt (retained expiry failure evidence)') `
+        'NONE_RETAINED must not satisfy failed expiry video evidence.'
+
+    $ordinaryFailedLifecycle = [ordered]@{ schemaVersion = 1; ordinary = $failed; expiry = $notRun }
+    Set-Content -LiteralPath (Join-Path $l2Root 'phases.json') `
+        -Value ($ordinaryFailedLifecycle | ConvertTo-Json -Depth 8)
+    $ordinaryFailedMissing = @(Get-MissingQualityGateArtifacts -RequestedLayer L2 -RepositoryRoot $failedL2Root)
+    Assert-True ($ordinaryFailedMissing -contains 'artifacts/quality-gate/L2/manifests/trace-files.txt (retained ordinary failure evidence)') `
+        'NONE_RETAINED must not satisfy failed ordinary trace evidence.'
+    Assert-True ($ordinaryFailedMissing -contains 'artifacts/quality-gate/L2/manifests/video-files.txt (retained ordinary failure evidence)') `
+        'NONE_RETAINED must not satisfy failed ordinary video evidence.'
+
+    Set-Content -LiteralPath (Join-Path $l2Root 'phases.json') `
+        -Value ($expiryFailedLifecycle | ConvertTo-Json -Depth 8)
+    $expiryArtifactRoot = Join-Path $l2Root 'expiry'
+    New-Item -ItemType Directory -Force -Path $expiryArtifactRoot | Out-Null
+    Set-Content -LiteralPath (Join-Path $expiryArtifactRoot 'SANITIZATION_FAILED.txt') -Value 'blocked'
+    $sanitizerBlockedMissing = @(Get-MissingQualityGateArtifacts -RequestedLayer L2 -RepositoryRoot $failedL2Root)
+    Assert-True ($sanitizerBlockedMissing -notcontains 'artifacts/quality-gate/L2/expiry/junit.xml') `
+        'A fail-closed sanitizer marker must replace unavailable expiry Playwright publications.'
+    Assert-True ($sanitizerBlockedMissing -notcontains 'artifacts/quality-gate/L2/manifests/trace-files.txt (retained expiry failure evidence)') `
+        'A fail-closed sanitizer marker must replace unavailable expiry media publications.'
+} finally {
+    Remove-Item -LiteralPath $failedL2Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $artifactNames = [regex]::Matches("$prWorkflow`n$nightlyWorkflow", '(?m)^\s+name:\s+((?:l[0-3]|nightly)-[a-z0-9-]+)\s*$') |
