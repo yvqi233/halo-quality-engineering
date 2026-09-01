@@ -146,15 +146,16 @@ class PostLifecycleIT {
         String name = createDraft("p10", "P10");
         Response firstPublish = admin.publishPost(name).then().statusCode(200).extract().response();
         waitForPhase(name, "PUBLISHED");
-        Eventually.until(DEADLINE, INITIAL_DELAY, admin::publicPosts,
-                response -> response.statusCode() == 200 && publicCount(response, name) == 1);
+        waitForPublic(name, 200);
 
         Response secondPublish = admin.publishPost(name).then().statusCode(200).extract().response();
+        Response stableCollection = Eventually.until(
+                DEADLINE, INITIAL_DELAY, admin::publicPosts, new StablePublicPostCount(name, 3));
 
         String firstSnapshot = firstPublish.jsonPath().getString("spec.releaseSnapshot");
         String secondSnapshot = secondPublish.jsonPath().getString("spec.releaseSnapshot");
         assertThat(firstSnapshot).isNotBlank().isEqualTo(secondSnapshot);
-        assertThat(publicCount(admin.publicPosts().then().statusCode(200).extract().response(), name)).isEqualTo(1);
+        assertThat(stableCollection.statusCode()).isEqualTo(200);
         waitForPublic(name, 200).then().statusCode(200);
     }
 
@@ -239,11 +240,6 @@ class PostLifecycleIT {
 
     private static String scenarioId(TestInfo testInfo) {
         return testInfo.getDisplayName().substring(0, 3);
-    }
-
-    private static long publicCount(Response response, String name) {
-        List<String> names = response.jsonPath().getList("items.metadata.name", String.class);
-        return names == null ? 0 : names.stream().filter(name::equals).count();
     }
 
     private Response settledPost(String name) {

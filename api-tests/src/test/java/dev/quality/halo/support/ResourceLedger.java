@@ -18,7 +18,7 @@ public final class ResourceLedger {
             try {
                 delete.accept(ref);
             } catch (Exception error) {
-                failures.add(new CleanupFailure(ref.name(), error.getMessage()));
+                failures.add(new CleanupFailure(ref.name(), error));
             }
         });
         return List.copyOf(failures);
@@ -30,4 +30,4 @@ interface ThrowingConsumer<T> {
     void accept(T value) throws Exception;
 }
 
-record CleanupFailure(String resourceName, String message) {}
+record CleanupFailure(String resourceName, Exception cause) {}

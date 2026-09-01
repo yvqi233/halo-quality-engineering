@@ -6,6 +6,7 @@ import io.restassured.response.Response;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -19,6 +20,8 @@ public final class HaloFixture implements AutoCloseable {
     private final RunIdentity runIdentity;
     private final ResourceLedger ledger;
     private final HaloApi admin;
+    private final Duration settleDeadline;
+    private final Duration settleInitialDelay;
     private final Set<String> trackedPosts = new LinkedHashSet<>();
 
     public HaloFixture() {
@@ -27,8 +30,15 @@ public final class HaloFixture implements AutoCloseable {
     }
 
     public HaloFixture(URI baseUri, RunIdentity runIdentity) {
+        this(baseUri, runIdentity, Duration.ofSeconds(15), Duration.ofMillis(100));
+    }
+
+    HaloFixture(
+            URI baseUri, RunIdentity runIdentity, Duration settleDeadline, Duration settleInitialDelay) {
         URI checkedBaseUri = Objects.requireNonNull(baseUri, "baseUri");
         this.runIdentity = Objects.requireNonNull(runIdentity, "runIdentity");
+        this.settleDeadline = Objects.requireNonNull(settleDeadline, "settleDeadline");
+        this.settleInitialDelay = Objects.requireNonNull(settleInitialDelay, "settleInitialDelay");
         this.ledger = new ResourceLedger();
         this.admin = new HaloApi(checkedBaseUri, new Credentials("qe-admin", "HaloQE!2026"));
     }
@@ -56,10 +66,24 @@ public final class HaloFixture implements AutoCloseable {
 
     @Override
     public void close() {
-        trackedPosts.forEach(this::waitForSettledPost);
-        List<?> failures = ledger.cleanup(this::delete);
-        if (!failures.isEmpty()) {
-            throw new IllegalStateException("Fixture cleanup failed for " + failures.size() + " resource(s)");
+        List<CleanupIssue> settlingFailures = new ArrayList<>();
+        List<CleanupFailure> deletionFailures;
+        try {
+            trackedPosts.forEach(name -> {
+                try {
+                    waitForSettledPost(name);
+                } catch (RuntimeException error) {
+                    settlingFailures.add(new CleanupIssue(name, error));
+                }
+            });
+        } finally {
+            deletionFailures = ledger.cleanup(this::delete);
+        }
+        if (!settlingFailures.isEmpty() || !deletionFailures.isEmpty()) {
+            List<CleanupIssue> deletions = deletionFailures.stream()
+                    .map(failure -> new CleanupIssue(failure.resourceName(), failure.cause()))
+                    .toList();
+            throw new CleanupException(settlingFailures, deletions);
         }
     }
 
@@ -82,9 +106,10 @@ public final class HaloFixture implements AutoCloseable {
     private void waitForSettledPost(String name) {
         long[] lastVersion = {Long.MIN_VALUE};
         int[] stableObservations = {0};
-        Eventually.until(Duration.ofSeconds(15), Duration.ofMillis(100), () -> admin.consolePost(name), response -> {
+        boolean[] settled = {false};
+        Response last = Eventually.until(settleDeadline, settleInitialDelay, () -> admin.consolePost(name), response -> {
             if (response.statusCode() == 404) {
-                return true;
+                return settled[0] = true;
             }
             if (response.statusCode() != 200 || response.jsonPath().get("status.observedVersion") == null) {
                 return false;
@@ -93,8 +118,12 @@ public final class HaloFixture implements AutoCloseable {
             long observed = response.jsonPath().getLong("status.observedVersion");
             stableObservations[0] = version == observed && version == lastVersion[0] ? stableObservations[0] + 1 : 1;
             lastVersion[0] = version;
-            return version == observed && stableObservations[0] >= 3;
+            return settled[0] = version == observed && stableObservations[0] >= 3;
         });
+        if (!settled[0]) {
+            throw new IllegalStateException(
+                    "post did not settle before cleanup deadline; last HTTP " + last.statusCode());
+        }
     }
 
     private static void requireSuccess(Response response, String operation) {
@@ -104,4 +133,28 @@ public final class HaloFixture implements AutoCloseable {
     }
 
     public record RoleUsers(Credentials admin, Credentials author, Credentials contributor, Credentials readonly) {}
+
+    public record CleanupIssue(String resourceName, Throwable cause) {}
+
+    public static final class CleanupException extends IllegalStateException {
+        private final List<CleanupIssue> settlingFailures;
+        private final List<CleanupIssue> deletionFailures;
+
+        private CleanupException(List<CleanupIssue> settlingFailures, List<CleanupIssue> deletionFailures) {
+            super("Fixture cleanup failed while settling " + settlingFailures.size() + " post(s) and deleting "
+                    + deletionFailures.size() + " resource(s)");
+            this.settlingFailures = List.copyOf(settlingFailures);
+            this.deletionFailures = List.copyOf(deletionFailures);
+            this.settlingFailures.forEach(failure -> addSuppressed(failure.cause()));
+            this.deletionFailures.forEach(failure -> addSuppressed(failure.cause()));
+        }
+
+        public List<CleanupIssue> settlingFailures() {
+            return settlingFailures;
+        }
+
+        public List<CleanupIssue> deletionFailures() {
+            return deletionFailures;
+        }
+    }
 }

@@ -366,14 +366,14 @@ public final class HaloApi {
 
         private final URI baseUri;
         private final Credentials credentials;
-        private final Filter retryEvidenceFilter;
+        private final Filter preflightEvidenceFilter;
         private final SessionKey sessionKey;
         private volatile String cookie;
 
-        private SessionAuthenticationFilter(URI baseUri, Credentials credentials, Filter retryEvidenceFilter) {
+        private SessionAuthenticationFilter(URI baseUri, Credentials credentials, Filter preflightEvidenceFilter) {
             this.baseUri = baseUri;
             this.credentials = credentials;
-            this.retryEvidenceFilter = retryEvidenceFilter;
+            this.preflightEvidenceFilter = preflightEvidenceFilter;
             this.sessionKey = new SessionKey(baseUri, credentials);
             this.cookie = SESSION_COOKIES.get(sessionKey);
         }
@@ -386,31 +386,20 @@ public final class HaloApi {
             if (cookie == null) {
                 cookie = SESSION_COOKIES.get(sessionKey);
             }
-            if (isProtectedIdentity(request) && cookie == null) {
+            if (isMutation(request)) {
+                preflightMutation();
+            } else if (isProtectedIdentity(request) && cookie == null) {
                 establishSession();
             }
             if (cookie != null) {
                 request.header("Cookie", cookie);
             }
-            Response response = context.next(request, responseSpecification);
-            if (isAllowlistedMutation(request) && requiresSession(response) && establishSession()) {
-                return retry(request);
-            }
-            return response;
+            return context.next(request, responseSpecification);
         }
 
-        private static boolean isAllowlistedMutation(FilterableRequestSpecification request) {
-            String method = request.getMethod();
-            String path = URI.create(request.getURI()).getPath();
-            return switch (method) {
-                case "POST" -> path.equals(CONSOLE_API + "/users")
-                        || path.matches(Pattern.quote(CONSOLE_API) + "/users/[^/]+/permissions")
-                        || path.equals(CONSOLE_API + "/posts")
-                        || path.equals(USER_CENTER_CONTENT_API + "/posts")
-                        || path.matches(Pattern.quote(SECURITY_CONSOLE_API) + "/users/[^/]+/(disable|enable)");
-                case "PUT" -> path.matches(Pattern.quote(CONSOLE_API) + "/posts/[^/]+(?:/(publish|unpublish|recycle))?")
-                        || path.matches(Pattern.quote(USER_CENTER_CONTENT_API) + "/posts/[^/]+(?:/publish)?");
-                case "DELETE" -> path.matches("/api/v1alpha1/users/[^/]+");
+        private static boolean isMutation(FilterableRequestSpecification request) {
+            return switch (request.getMethod()) {
+                case "POST", "PUT", "PATCH", "DELETE" -> true;
                 default -> false;
             };
         }
@@ -423,6 +412,40 @@ public final class HaloApi {
         private static boolean requiresSession(Response response) {
             return response.statusCode() == 302 && response.getHeader("Location") != null
                     && response.getHeader("Location").startsWith("/login");
+        }
+
+        private void preflightMutation() {
+            if (cookie == null) {
+                establishSession();
+            }
+            Response preflight = identityPreflight();
+            if (requiresSession(preflight) || hasUnexpectedPrincipal(preflight)) {
+                clearSession();
+                if (establishSession()) {
+                    identityPreflight();
+                }
+            }
+        }
+
+        private Response identityPreflight() {
+            RequestSpecification preflight = RestAssured.given()
+                    .baseUri(baseUri.toString())
+                    .auth()
+                    .preemptive()
+                    .basic(credentials.username(), credentials.password())
+                    .header(XHR_HEADER, "XMLHttpRequest")
+                    .accept("application/json")
+                    .config(RestAssured.config().redirect(RedirectConfig.redirectConfig().followRedirects(false)))
+                    .filter(preflightEvidenceFilter);
+            if (cookie != null) {
+                preflight.header("Cookie", cookie);
+            }
+            return preflight.get(USER_CENTER_IDENTITY_API);
+        }
+
+        private boolean hasUnexpectedPrincipal(Response response) {
+            return response.statusCode() == 200
+                    && !credentials.username().equals(response.jsonPath().getString("name"));
         }
 
         private synchronized boolean establishSession() {
@@ -475,21 +498,6 @@ public final class HaloApi {
                 SESSION_COOKIES.remove(sessionKey, cookie);
                 cookie = null;
             }
-        }
-
-        private Response retry(FilterableRequestSpecification request) {
-            RequestSpecification retry = RestAssured.given()
-                    .baseUri(baseUri.toString())
-                    .contentType("application/json")
-                    .accept("application/json")
-                    .config(RestAssured.config().redirect(RedirectConfig.redirectConfig().followRedirects(false)))
-                    .header(XHR_HEADER, "XMLHttpRequest")
-                    .header("Cookie", cookie)
-                    .filter(retryEvidenceFilter);
-            if (request.getBody() != null) {
-                retry.body((Object) request.getBody());
-            }
-            return retry.request(request.getMethod(), request.getURI());
         }
 
         private String encryptPassword(String loginPage) throws Exception {
