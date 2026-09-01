@@ -37,13 +37,123 @@ jobs:
           cache-dependency-path: e2e/pnpm-lock.yaml
       - name: Install E2E dependencies
         run: pnpm --dir e2e install --frozen-lockfile
-      - name: Install Playwright Chromium
-        run: pnpm --dir e2e exec playwright install --with-deps chromium
+      - name: Install Playwright Chromium and Firefox
+        run: pnpm --dir e2e exec playwright install --with-deps chromium firefox
       - name: Run prepared nightly matrix once
         id: gate
         continue-on-error: true
         shell: pwsh
         run: ./scripts/quality-gate.ps1 -Layer All -QuarantineMode Nightly
+      - name: Run Firefox nightly journeys once
+        id: firefox
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repoRoot = (Get-Location).Path
+          $artifactRoot = Join-Path $repoRoot 'artifacts/nightly-firefox'
+          $environmentScript = Join-Path $repoRoot 'scripts/environment.ps1'
+          $collectorScript = Join-Path $repoRoot 'scripts/collect-evidence.ps1'
+          $playwright = Join-Path $repoRoot 'e2e/node_modules/.bin/playwright'
+
+          function Invoke-FirefoxPhase {
+            param([string]$Name, [string]$SessionTimeout, [string[]]$Arguments)
+
+            $phaseRoot = Join-Path $artifactRoot $Name
+            New-Item -ItemType Directory -Force -Path $phaseRoot | Out-Null
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $primary = $null
+            $kind = 'NONE'
+            $previousTimeout = $env:HALO_SESSION_TIMEOUT
+            $env:HALO_SESSION_TIMEOUT = $SessionTimeout
+            try {
+              try {
+                $kind = 'ENVIRONMENT'
+                & $environmentScript -Action Down | ForEach-Object { Write-Host $_ }
+                & $environmentScript -Action Up | ForEach-Object { Write-Host $_ }
+                & $environmentScript -Action Initialize | ForEach-Object { Write-Host $_ }
+                $kind = 'PRODUCT'
+                $env:PW_ARTIFACT_DIR = $phaseRoot
+                $env:HALO_QE_INVOCATION_ID = "nightly-firefox-$Name-$([Guid]::NewGuid().ToString('N'))"
+                $env:QE_RUN_ID = "firefox-$([Guid]::NewGuid().ToString('N').Substring(0, 12))"
+                Push-Location (Join-Path $repoRoot 'e2e')
+                try {
+                  $output = @(& $playwright @Arguments)
+                  $exitCode = $LASTEXITCODE
+                  $output | ForEach-Object { Write-Host $_ }
+                  if ($exitCode -ne 0) {
+                    $junitPath = Join-Path $phaseRoot 'junit.xml'
+                    $toolFailure = (Test-Path -LiteralPath (Join-Path $phaseRoot 'SANITIZATION_FAILED.txt')) -or
+                      ((Test-Path -LiteralPath $junitPath) -and
+                        (Get-Content -Raw -LiteralPath $junitPath) -match 'cleanup failed:|Credential-safe artifact publishing blocked')
+                    if ($toolFailure) {
+                      $kind = 'TEST_TOOL'
+                    }
+                    throw "Firefox $Name journeys failed with exit code $exitCode."
+                  }
+                } finally {
+                  Pop-Location
+                }
+              } catch {
+                $primary = $_.Exception.Message
+              }
+
+              try {
+                & $collectorScript -ArtifactRoot (Join-Path $phaseRoot 'environment') |
+                  ForEach-Object { Write-Host $_ }
+              } catch {
+                if ($null -eq $primary) {
+                  $primary = "evidence collection: $($_.Exception.Message)"
+                  $kind = 'TEST_TOOL'
+                } else {
+                  Write-Error "Firefox $Name additional failure: evidence collection: $($_.Exception.Message)" -ErrorAction Continue
+                }
+              }
+
+              try {
+                & $environmentScript -Action Down | ForEach-Object { Write-Host $_ }
+              } catch {
+                if ($null -eq $primary) {
+                  $primary = "environment teardown: $($_.Exception.Message)"
+                  $kind = 'ENVIRONMENT'
+                } else {
+                  Write-Error "Firefox $Name additional failure: environment teardown: $($_.Exception.Message)" -ErrorAction Continue
+                }
+              }
+            } finally {
+              if ($null -eq $previousTimeout) {
+                Remove-Item Env:HALO_SESSION_TIMEOUT -ErrorAction SilentlyContinue
+              } else {
+                $env:HALO_SESSION_TIMEOUT = $previousTimeout
+              }
+              $watch.Stop()
+            }
+
+            if ($null -ne $primary) {
+              Write-Error "Firefox $Name failed [$kind]: $primary" -ErrorAction Continue
+            }
+            [pscustomobject]@{
+              result = if ($null -eq $primary) { 'PASS' } else { 'FAIL' }
+              durationSeconds = [Math]::Round($watch.Elapsed.TotalSeconds, 3)
+              failureKind = if ($null -eq $primary) { 'NONE' } else { $kind }
+            }
+          }
+
+          $ordinary = Invoke-FirefoxPhase -Name ordinary -SessionTimeout PT30M `
+            -Arguments @('test', '--project=firefox', '--grep-invert', '@session-expiry')
+          $expiry = $null
+          if ($ordinary.result -eq 'PASS') {
+            $expiry = Invoke-FirefoxPhase -Name expiry -SessionTimeout PT5S `
+              -Arguments @('test', '--project=firefox', '--grep', '@session-expiry', '--no-deps')
+          }
+          $failed = if ($ordinary.result -eq 'FAIL') { $ordinary } elseif ($expiry.result -eq 'FAIL') { $expiry } else { $null }
+          $duration = $ordinary.durationSeconds + $(if ($null -eq $expiry) { 0 } else { $expiry.durationSeconds })
+          $result = if ($null -eq $failed) { 'PASS' } else { 'FAIL' }
+          $kind = if ($null -eq $failed) { 'NONE' } else { $failed.failureKind }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "result=$result"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "durationSeconds=$([Math]::Round($duration, 3))"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "failureKind=$kind"
+          if ($result -ne 'PASS') { exit 1 }
       - name: Validate nightly artifact completeness
         id: preflight
         if: always()
@@ -90,6 +200,16 @@ jobs:
             artifacts/quality-gate/L2/**/junit.xml
             artifacts/quality-gate/L2/**/html-report/**
             artifacts/quality-gate/L2/**/SANITIZATION_FAILED.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload nightly Firefox evidence
+        id: upload-nightly-firefox-evidence
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-firefox-evidence
+          path: artifacts/nightly-firefox/**
           if-no-files-found: error
           retention-days: 14
       - name: Upload nightly Playwright traces
@@ -163,13 +283,19 @@ jobs:
           if (-not $duration) { $duration = '0' }
           $kind = '${{ steps.gate.outputs.failureKind }}'
           if (-not $kind) { $kind = 'TEST_TOOL' }
+          $firefoxResult = '${{ steps.firefox.outputs.result }}'
+          if (-not $firefoxResult) { $firefoxResult = 'FAIL' }
+          $firefoxDuration = '${{ steps.firefox.outputs.durationSeconds }}'
+          if (-not $firefoxDuration) { $firefoxDuration = '0' }
+          $firefoxKind = '${{ steps.firefox.outputs.failureKind }}'
+          if (-not $firefoxKind) { $firefoxKind = 'TEST_TOOL' }
           $preflightResult = '${{ steps.preflight.outputs.result }}'
           if (-not $preflightResult) { $preflightResult = 'FAIL' }
           $preflightDuration = '${{ steps.preflight.outputs.durationSeconds }}'
           if (-not $preflightDuration) { $preflightDuration = '0' }
           $preflightKind = '${{ steps.preflight.outputs.failureKind }}'
           if (-not $preflightKind) { $preflightKind = 'TEST_TOOL' }
-          $uploads = @('${{ steps.upload-nightly-junit-xml.outcome }}', '${{ steps.upload-nightly-api-evidence.outcome }}', '${{ steps.upload-nightly-playwright-report.outcome }}', '${{ steps.upload-nightly-playwright-traces.outcome }}', '${{ steps.upload-nightly-playwright-videos.outcome }}', '${{ steps.upload-nightly-contract-evidence.outcome }}', '${{ steps.upload-nightly-gate-metadata.outcome }}', '${{ steps.upload-nightly-container-logs.outcome }}')
+          $uploads = @('${{ steps.upload-nightly-junit-xml.outcome }}', '${{ steps.upload-nightly-api-evidence.outcome }}', '${{ steps.upload-nightly-playwright-report.outcome }}', '${{ steps.upload-nightly-firefox-evidence.outcome }}', '${{ steps.upload-nightly-playwright-traces.outcome }}', '${{ steps.upload-nightly-playwright-videos.outcome }}', '${{ steps.upload-nightly-contract-evidence.outcome }}', '${{ steps.upload-nightly-gate-metadata.outcome }}', '${{ steps.upload-nightly-container-logs.outcome }}')
           $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
           $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
           $started = [DateTimeOffset]::Parse('${{ steps.upload-start.outputs.startedAt }}')
@@ -196,11 +322,13 @@ jobs:
             '| layer | result | durationSeconds | failureKind | artifactName |',
             '|---|---|---:|---|---|',
             "| L3 | $testResult | $duration | $kind | nightly-regression |",
+            "| L3-firefox | $firefoxResult | $firefoxDuration | $firefoxKind | firefox-e2e |",
             "| L3-evidence-preflight | $preflightResult | $preflightDuration | $preflightKind | nightly-required-artifacts |",
             "| L3-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | nightly evidence artifacts |",
             ''
           ) + $quarantineLines) -join "`n"
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
           if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or
+              '${{ steps.firefox.outcome }}' -ne 'success' -or $firefoxResult -ne 'PASS' -or
               '${{ steps.preflight.outcome }}' -ne 'success' -or $preflightResult -ne 'PASS' -or
               $uploadResult -ne 'PASS') { exit 1 }

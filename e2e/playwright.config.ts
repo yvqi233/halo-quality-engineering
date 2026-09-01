@@ -43,6 +43,12 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup']
     },
+    {
+      name: 'firefox',
+      testMatch: /specs[\\/].*\.spec\.ts/,
+      use: { ...devices['Desktop Firefox'] },
+      dependencies: ['setup']
+    },
     { name: 'unit', testMatch: /unit[\\/].*\.spec\.ts/, workers: 1 },
     {
       name: 'probe',

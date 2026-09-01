@@ -194,7 +194,9 @@ Assert-Match $nightlyWorkflow 'artifacts/quality-gate/L0/quarantine\.yaml' 'Nigh
 Assert-Match $nightlyWorkflow 'validation unavailable' 'Nightly summary must identify unavailable validation.'
 Assert-True (-not $nightlyWorkflow.Contains('Get-Content -Raw docs/quarantine.yaml')) `
     'Nightly must not label the unvalidated source quarantine file as validated.'
-Assert-True (-not [regex]::IsMatch($nightlyWorkflow, '(?i)firefox|20-run|stability\.ps1')) 'Task 9 must not claim Task 10 Firefox or stability results.'
+Assert-Match $nightlyWorkflow 'playwright install --with-deps chromium firefox' 'Nightly must install both required browsers.'
+Assert-Match $nightlyWorkflow "--project=firefox[\s\S]*?--grep-invert[\s\S]*?--project=firefox[\s\S]*?--grep[\s\S]*?--no-deps" 'Nightly must run ordinary Firefox journeys and isolated E10 exactly once.'
+Assert-True (-not [regex]::IsMatch($nightlyWorkflow, '(?i)20-run|stability\.ps1')) 'Nightly must not claim the separately executed 20-run qualification.'
 
 Assert-True (Test-Path -LiteralPath $preflightPath) 'Missing quality-gate artifact preflight script.'
 $preflightTokens = $null
