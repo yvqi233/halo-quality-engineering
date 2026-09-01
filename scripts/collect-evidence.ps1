@@ -10,9 +10,21 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $ArtifactRoot = if ($ArtifactRoot) { $ArtifactRoot } else { Join-Path $repoRoot 'artifacts/environment' }
 $composeFile = Join-Path $repoRoot 'environment/docker-compose.yml'
 $lockFile = Join-Path $repoRoot 'environment/image-lock.env'
-$DOCKER_CLI = Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\resources\bin\docker.exe'
 $sensitiveKeys = @('password', 'authorization', 'cookie', 'set-cookie', 'token', 'storagestate')
 $localSecrets = @('HaloQE!2026', 'halo-qe-local')
+
+function Resolve-DockerCli {
+    if ($env:DOCKER_CLI) {
+        return $env:DOCKER_CLI
+    }
+    $docker = Get-Command docker -ErrorAction SilentlyContinue
+    if ($null -eq $docker) {
+        throw 'Docker CLI is unavailable. Set DOCKER_CLI or add docker to PATH.'
+    }
+    return $docker.Source
+}
+
+$DOCKER_CLI = Resolve-DockerCli
 
 function Protect-Text {
     param([AllowNull()][object]$Value)
@@ -22,7 +34,7 @@ function Protect-Text {
         $text = $text -replace [regex]::Escape($secret), '[REDACTED]'
     }
     $text = [regex]::Replace($text, '(?im)\bAuthorization\s*:\s*(?:Basic|Bearer)\s+[^\r\n]*', '[REDACTED]')
-    $text = [regex]::Replace($text, '(?i)\b(Basic|Bearer)\s+[A-Za-z0-9+/_=.-]+', '$1 [REDACTED]')
+    $text = [regex]::Replace($text, '(?i)\b(Basic|Bearer)\s+\S+', '$1 [REDACTED]')
     $text = [regex]::Replace($text, '(?im)\b(?:Set-Cookie|Cookie)\s*[:=]\s*[^\r\n]*', '[REDACTED]')
     $text = [regex]::Replace(
         $text,
@@ -97,7 +109,17 @@ function Write-RedactedText {
 function Invoke-ComposeDiagnostic {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
-    $output = & $DOCKER_CLI compose --project-name halo-qe --env-file $lockFile --file $composeFile @Arguments 2>&1 | Out-String
+    $previousConsoleEncoding = [Console]::OutputEncoding
+    $previousOutputEncoding = $OutputEncoding
+    try {
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        [Console]::OutputEncoding = $utf8
+        $OutputEncoding = $utf8
+        $output = & $DOCKER_CLI compose --project-name halo-qe --env-file $lockFile --file $composeFile @Arguments 2>&1 | Out-String
+    } finally {
+        [Console]::OutputEncoding = $previousConsoleEncoding
+        $OutputEncoding = $previousOutputEncoding
+    }
     if ($LASTEXITCODE -ne 0) {
         return "Docker Compose command failed (exit $LASTEXITCODE): $($Arguments -join ' ')`n$output"
     }
@@ -125,9 +147,6 @@ function Get-HealthDiagnostic {
     return (Protect-Value $record) | ConvertTo-Json -Depth 32
 }
 
-if (-not (Test-Path -LiteralPath $DOCKER_CLI -PathType Leaf)) {
-    throw "Docker Desktop CLI is required at $DOCKER_CLI"
-}
 if (-not (Test-Path -LiteralPath $composeFile) -or -not (Test-Path -LiteralPath $lockFile)) {
     throw 'The pinned environment files are missing.'
 }

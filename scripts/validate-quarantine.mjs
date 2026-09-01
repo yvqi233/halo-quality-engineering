@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const REQUIRED_FIELDS = ['testId', 'issueUrl', 'owner', 'reason', 'expiresAt', 'restoreAfterGreenRuns'];
-const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_8601 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|([+-])(\d{2}):(\d{2}))$/;
 
 /** Parses the intentionally small quarantine.yaml schema without accepting implicit YAML features. */
 function parseQuarantine(source) {
@@ -27,13 +27,13 @@ function parseQuarantine(source) {
       if (!Array.isArray(root.cases)) throw new Error(`line ${lineNumber}: cases must be declared before entries`);
       current = {};
       root.cases.push(current);
-      if (caseMatch[1]) current[caseMatch[1]] = scalar(caseMatch[2]);
+      if (caseMatch[1]) current[caseMatch[1]] = parseScalar(caseMatch[2], lineNumber);
       continue;
     }
     const fieldMatch = rawLine.match(/^    (\w+)\s*:\s*(.*)\s*$/);
     if (fieldMatch && current) {
       if (Object.hasOwn(current, fieldMatch[1])) throw new Error(`line ${lineNumber}: duplicate field ${fieldMatch[1]}`);
-      current[fieldMatch[1]] = scalar(fieldMatch[2]);
+      current[fieldMatch[1]] = parseScalar(fieldMatch[2], lineNumber);
       continue;
     }
     throw new Error(`line ${lineNumber}: unsupported quarantine YAML`);
@@ -42,13 +42,56 @@ function parseQuarantine(source) {
   return root.cases;
 }
 
+function parseScalar(raw, lineNumber) {
+  try {
+    return scalar(raw);
+  } catch (error) {
+    throw new Error(`line ${lineNumber}: ${error.message}`);
+  }
+}
+
 function scalar(raw) {
   const value = raw.trim();
   if (!value) return '';
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+  const startsQuote = value.startsWith('"') || value.startsWith("'");
+  const endsQuote = value.endsWith('"') || value.endsWith("'");
+  if (startsQuote || endsQuote) {
+    const quote = value[0];
+    const matchingTerminalQuote = value.endsWith(quote)
+      && (quote !== '"' || !isEscaped(value, value.length - 1));
+    if (!matchingTerminalQuote || (quote === "'" && value.split("'").length % 2 !== 1)) {
+      throw new Error('malformed quoted scalar');
+    }
     return value.slice(1, -1);
   }
   return value;
+}
+
+function isEscaped(value, index) {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) slashes += 1;
+  return slashes % 2 === 1;
+}
+
+function parseIso8601(value) {
+  const match = ISO_8601.exec(value);
+  if (!match) return undefined;
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return undefined;
+
+  const [, year, month, day, hour, minute, second, zone, sign, zoneHour, zoneMinute] = match;
+  const offsetMinutes = zone === 'Z' ? 0 : (sign === '+' ? 1 : -1)
+    * (Number(zoneHour) * 60 + Number(zoneMinute));
+  const localClock = new Date(timestamp + offsetMinutes * 60_000);
+  if (localClock.getUTCFullYear() !== Number(year)
+    || localClock.getUTCMonth() + 1 !== Number(month)
+    || localClock.getUTCDate() !== Number(day)
+    || localClock.getUTCHours() !== Number(hour)
+    || localClock.getUTCMinutes() !== Number(minute)
+    || localClock.getUTCSeconds() !== Number(second)) {
+    return undefined;
+  }
+  return timestamp;
 }
 
 function isPublicIssueUrl(value) {
@@ -90,9 +133,10 @@ export function validateQuarantine(source, now = new Date()) {
       errors.push(`${prefix}.issueUrl must be a public HTTPS URL`);
     }
     if (typeof entry.expiresAt === 'string' && entry.expiresAt.trim()) {
-      if (!ISO_8601.test(entry.expiresAt) || Number.isNaN(Date.parse(entry.expiresAt))) {
+      const expiry = parseIso8601(entry.expiresAt);
+      if (expiry === undefined) {
         errors.push(`${prefix}.expiresAt must be ISO-8601`);
-      } else if (Date.parse(entry.expiresAt) <= now.getTime()) {
+      } else if (expiry <= now.getTime()) {
         errors.push(`${prefix}.expiresAt is expired`);
       }
     }

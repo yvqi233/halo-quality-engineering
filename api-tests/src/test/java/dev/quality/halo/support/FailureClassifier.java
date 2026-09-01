@@ -1,5 +1,6 @@
 package dev.quality.halo.support;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import io.restassured.response.Response;
 import java.net.ConnectException;
 import java.net.SocketException;
@@ -10,6 +11,7 @@ import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.Locale;
 
 /** Assigns one gate-blocking attribution from the evidence available for a failed test. */
 public final class FailureClassifier {
@@ -27,38 +29,48 @@ public final class FailureClassifier {
         Objects.requireNonNull(error, "error");
         Objects.requireNonNull(response, "response");
 
-        if (hasCause(error, FailureClassifier::isEnvironmentFailure)) {
-            return FailureKind.ENVIRONMENT;
+        if (hasCause(error, AssertionError.class::isInstance) && response.isPresent()) {
+            return FailureKind.PRODUCT;
         }
         if (hasCause(error, FailureClassifier::isOpenApiFailure)) {
             return FailureKind.CONTRACT;
         }
-        if (hasCause(error, AssertionError.class::isInstance) && response.isPresent()) {
-            return FailureKind.PRODUCT;
+        if (hasCause(error, FailureClassifier::isTestToolFailure)) {
+            return FailureKind.TEST_TOOL;
+        }
+        if (hasCause(error, FailureClassifier::isTypedEnvironmentFailure)
+                || hasCause(error, FailureClassifier::hasEnvironmentMessage)) {
+            return FailureKind.ENVIRONMENT;
         }
         return FailureKind.TEST_TOOL;
     }
 
-    private static boolean isEnvironmentFailure(Throwable error) {
-        if (error instanceof ConnectException
+    private static boolean isTypedEnvironmentFailure(Throwable error) {
+        return error instanceof ConnectException
                 || error instanceof SocketException
                 || error instanceof UnknownHostException
-                || error instanceof HttpTimeoutException) {
-            return true;
-        }
-        String type = error.getClass().getSimpleName().toLowerCase();
-        String message = String.valueOf(error.getMessage()).toLowerCase();
-        return type.contains("health")
-                || type.contains("startup")
-                || message.contains("health check")
+                || error instanceof HttpTimeoutException;
+    }
+
+    private static boolean hasEnvironmentMessage(Throwable error) {
+        String message = String.valueOf(error.getMessage()).toLowerCase(Locale.ROOT);
+        return message.contains("health check")
                 || message.contains("failed to start")
                 || message.contains("startup failed")
                 || message.contains("connection refused");
     }
 
     private static boolean isOpenApiFailure(Throwable error) {
-        String type = error.getClass().getSimpleName().toLowerCase();
+        String type = error.getClass().getSimpleName().toLowerCase(Locale.ROOT);
         return type.contains("openapi") && (type.contains("breaking") || type.contains("contract"));
+    }
+
+    private static boolean isTestToolFailure(Throwable error) {
+        if (error instanceof JsonProcessingException) {
+            return true;
+        }
+        String type = error.getClass().getSimpleName().toLowerCase(Locale.ROOT);
+        return type.contains("fixture") || type.contains("cleanup");
     }
 
     private static boolean hasCause(Throwable error, java.util.function.Predicate<Throwable> predicate) {

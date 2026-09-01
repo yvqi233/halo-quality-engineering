@@ -50,6 +50,16 @@ test('rejects a non-ISO expiry even when the other future-entry fields are valid
   ]);
 });
 
+test('rejects unmatched YAML quotes and impossible calendar dates', () => {
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', 'owner: "quality-engineering'), NOW), [
+    'line 4: malformed quoted scalar'
+  ]);
+  assert.deepEqual(validateQuarantine(validCase.replace('2026-09-15T00:00:00Z', '2026-02-30T00:00:00Z'), NOW), [
+    'cases[0].expiresAt must be ISO-8601'
+  ]);
+  assert.deepEqual(validateQuarantine(validCase.replace('2026-09-15T00:00:00Z', '2028-02-29T00:00:00+09:00'), NOW), []);
+});
+
 test('CLI exits 2 for invalid future quarantine entries', () => {
   const directory = mkdtempSync(join(tmpdir(), 'halo-quarantine-'));
   const quarantinePath = join(directory, 'quarantine.yaml');

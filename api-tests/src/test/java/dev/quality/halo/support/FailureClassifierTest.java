@@ -43,6 +43,31 @@ class FailureClassifierTest {
                 .isNotEqualTo(FailureClassifier.FailureKind.FLAKY_CANDIDATE);
     }
 
+    @Test
+    void givesReceivedProductResponseAssertionPrecedenceOverIncidentalEnvironmentWords() {
+        assertThat(FailureClassifier.classify(
+                        new AssertionError("health check expected 403 but was 200"), Optional.of(response(200))))
+                .isEqualTo(PRODUCT);
+    }
+
+    @Test
+    void givesFixtureSerializationAndCleanupEvidencePrecedenceOverIncidentalEnvironmentWords() {
+        Throwable serialization = new IllegalStateException(
+                "wrapper health check failed", new JsonProcessingException("startup fixture") {});
+        Throwable cleanup = new IllegalStateException(
+                "startup failed", new FixtureCleanupException("fixture cleanup failed"));
+
+        assertThat(FailureClassifier.classify(serialization, Optional.empty())).isEqualTo(TEST_TOOL);
+        assertThat(FailureClassifier.classify(cleanup, Optional.empty())).isEqualTo(TEST_TOOL);
+    }
+
+    @Test
+    void classifiesTypedEnvironmentEvidenceInANestedCause() {
+        assertThat(FailureClassifier.classify(
+                        new IllegalStateException("wrapper", new ConnectException("refused")), Optional.empty()))
+                .isEqualTo(ENVIRONMENT);
+    }
+
     private static Response response(int status) {
         return new ResponseBuilder().setStatusCode(status).build();
     }
