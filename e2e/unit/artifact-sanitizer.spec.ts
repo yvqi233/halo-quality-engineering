@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import { expect, test } from '@playwright/test';
-import { sanitizeArtifactTree } from '../reporters/artifact-sanitizer';
+import { sanitizeArtifactTree, validateArtifactTree } from '../reporters/artifact-sanitizer';
 
 test('sanitizes trace archives and embedded HTML report archives', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'halo-qe-sanitize-'));
@@ -50,6 +50,7 @@ test('sanitizes trace archives and embedded HTML report archives', async () => {
     );
 
     await sanitizeArtifactTree(directory, [password, session, token]);
+    await validateArtifactTree(directory, [password, session, token]);
 
     const traceText = new AdmZip(path.join(directory, 'trace.zip'))
       .getEntries()

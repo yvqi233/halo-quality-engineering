@@ -21,5 +21,30 @@ test('preserves the primary failure while attaching cleanup details', () => {
 
   expect(result).toBe(primary);
   expect(result.message).toBe('journey assertion failed');
-  expect(result.cause).toEqual(expect.objectContaining({ message: expect.stringContaining('readonly') }));
+  expect(causeMessages(result)).toEqual([
+    'delete readonly: HTTP 403',
+    'close author-context: close failed'
+  ]);
 });
+
+test('preserves an existing close failure when later cleanup also fails', () => {
+  const primary = new Error('login failed', { cause: new Error('close failed login context author: rejected') });
+  const result = attachCleanupFailures(primary, [
+    { operation: 'delete user', resourceName: 'readonly', message: 'HTTP 500' },
+    { operation: 'close context', resourceName: 'admin', message: 'rejected' }
+  ]);
+
+  expect(causeMessages(result)).toEqual([
+    'close failed login context author: rejected',
+    'delete user readonly: HTTP 500',
+    'close context admin: rejected'
+  ]);
+});
+
+function causeMessages(error: Error): string[] {
+  const cause = error.cause;
+  if (cause instanceof AggregateError) {
+    return cause.errors.map(item => item instanceof Error ? item.message : String(item));
+  }
+  return cause instanceof Error ? [cause.message] : [];
+}

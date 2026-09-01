@@ -21,6 +21,21 @@ export async function sanitizeArtifactTree(root: string, secrets: readonly strin
   }
 }
 
+export async function validateArtifactTree(root: string, secrets: readonly string[]): Promise<void> {
+  if (!(await exists(root))) return;
+  if ((await stat(root)).isFile()) {
+    await validateFile(root, secrets);
+    return;
+  }
+  for (const file of await walk(root)) {
+    try {
+      await validateFile(file, secrets);
+    } catch (error) {
+      throw new Error(`failed to validate ${file}: ${errorMessage(error)}`, { cause: error });
+    }
+  }
+}
+
 async function sanitizeFile(file: string, secrets: readonly string[]): Promise<void> {
   if (file.toLowerCase().endsWith('.zip')) {
     const sanitized = sanitizeZip(await readFile(file), secrets);
@@ -32,6 +47,17 @@ async function sanitizeFile(file: string, secrets: readonly string[]): Promise<v
   const text = data.toString('utf8');
   const sanitized = sanitizeEmbeddedArchives(sanitizeTextDocument(text, secrets), secrets);
   if (sanitized !== text) await atomicWrite(file, Buffer.from(sanitized));
+}
+
+async function validateFile(file: string, secrets: readonly string[]): Promise<void> {
+  const data = await readFile(file);
+  if (file.toLowerCase().endsWith('.zip')) {
+    validateZip(data, secrets);
+  } else if (isProbablyText(data)) {
+    validateText(data.toString('utf8'), secrets);
+  } else {
+    assertSecretsAbsent(data, secrets);
+  }
 }
 
 function sanitizeZip(data: Buffer, secrets: readonly string[]): Buffer {
@@ -48,6 +74,39 @@ function sanitizeZip(data: Buffer, secrets: readonly string[]): Buffer {
     target.addFile(entry.entryName, content, entry.comment, entry.header.attr);
   }
   return target.toBuffer();
+}
+
+function validateZip(data: Buffer, secrets: readonly string[]): void {
+  const archive = new AdmZip(data);
+  for (const entry of archive.getEntries()) {
+    if (entry.isDirectory) continue;
+    const content = entry.getData();
+    if (isZipArchive(content)) validateZip(content, secrets);
+    else if (isProbablyText(content)) validateText(content.toString('utf8'), secrets);
+    else assertSecretsAbsent(content, secrets);
+  }
+}
+
+function validateText(text: string, secrets: readonly string[]): void {
+  for (const match of text.matchAll(new RegExp(EMBEDDED_ZIP.source, EMBEDDED_ZIP.flags))) {
+    const archive = Buffer.from(match[1], 'base64');
+    if (isZipArchive(archive)) validateZip(archive, secrets);
+  }
+  const withoutArchives = text.replace(
+    new RegExp(EMBEDDED_ZIP.source, EMBEDDED_ZIP.flags),
+    'data:application/zip;base64,[VALIDATED]'
+  );
+  if (sanitizeTextDocument(withoutArchives, secrets) !== withoutArchives) {
+    throw new Error('artifact content still requires credential sanitization');
+  }
+}
+
+function assertSecretsAbsent(data: Buffer, secrets: readonly string[]): void {
+  for (const secret of secrets.filter(Boolean)) {
+    if (data.indexOf(Buffer.from(secret)) !== -1) {
+      throw new Error('registered secret remains in artifact content');
+    }
+  }
 }
 
 function sanitizeTextDocument(text: string, secrets: readonly string[]): string {

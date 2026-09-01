@@ -224,8 +224,13 @@ async function loginContext(
     await page.close();
     return context;
   } catch (error) {
-    await context.close().catch(() => {});
-    throw error;
+    const failures = await runReverseCleanup(
+      [context],
+      'close failed login context',
+      failedContext => failedContext.close(),
+      () => username
+    );
+    throw attachCleanupFailures(error, failures);
   }
 }
 

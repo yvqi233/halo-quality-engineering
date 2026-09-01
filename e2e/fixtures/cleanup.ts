@@ -24,10 +24,16 @@ export async function runReverseCleanup<T>(
 export function attachCleanupFailures(primary: unknown, failures: CleanupFailure[]): Error {
   const error = primary instanceof Error ? primary : new Error(String(primary));
   if (failures.length === 0) return error;
-  const details = failures
-    .map(failure => `${failure.operation} ${failure.resourceName}: ${failure.message}`)
-    .join('; ');
-  error.cause = new Error(`cleanup failures: ${details}`);
+  const details = failures.map(failure => new Error(
+    `${failure.operation} ${failure.resourceName}: ${failure.message}`
+  ));
+  const existing = error.cause === undefined
+    ? []
+    : error.cause instanceof AggregateError
+      ? [...error.cause.errors]
+      : [error.cause];
+  const causes = [...existing, ...details];
+  error.cause = causes.length === 1 ? causes[0] : new AggregateError(causes, 'cleanup failures');
   return error;
 }
 

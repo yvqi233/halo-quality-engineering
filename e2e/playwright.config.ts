@@ -1,6 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
+import { ensureInvocationNamespace } from './reporters/secret-registry';
 
-const artifactRoot = process.env.PW_ARTIFACT_DIR ?? 'artifacts';
+const invocationId = ensureInvocationNamespace();
+const artifactRoot = process.env.PW_ARTIFACT_DIR ?? `artifacts/${invocationId}`;
 
 export default defineConfig({
   testDir: '.',
@@ -17,7 +19,11 @@ export default defineConfig({
   reporter: [
     ['html', { outputFolder: `${artifactRoot}/html-report`, open: 'never' }],
     ['junit', { outputFile: `${artifactRoot}/junit.xml` }],
-    ['./reporters/credential-safe-reporter.ts', { artifactRoot }]
+    ['./reporters/credential-safe-reporter.ts', {
+      artifactRoot,
+      invocationId,
+      forceSanitizerFailure: process.env.PW_SANITIZER_FORCE_FAILURE === '1'
+    }]
   ],
   projects: [
     {

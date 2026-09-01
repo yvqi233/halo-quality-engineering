@@ -16,6 +16,7 @@ test('provisioning failure preserves its error while reverse cleanup and closure
         close: async () => {
           events.push(`close context ${number}`);
           if (number === 1) throw new Error('admin context close failed');
+          if (number === 2) throw new Error('failed login context close failed');
         },
         request: {
           get: async () => response(200, { name: 'qe-admin' }),
@@ -42,8 +43,17 @@ test('provisioning failure preserves its error while reverse cleanup and closure
   }
 
   expect(thrown?.message).toBe('author login failed');
-  expect((thrown?.cause as Error).message).toContain('qe-run-0-setup-readonly');
-  expect((thrown?.cause as Error).message).toContain('admin context close failed');
+  expect(causeMessages(thrown!)).toEqual([
+    'close failed login context qe-run-0-setup-author: failed login context close failed',
+    'delete user qe-run-0-setup-readonly: HTTP 500',
+    'close context browser-context: admin context close failed'
+  ]);
+  expect(events.filter(event => event.startsWith('close context') || event.startsWith('delete '))).toEqual([
+    'close context 2',
+    'delete qe-run-0-setup-readonly',
+    'delete qe-run-0-setup-author',
+    'close context 1'
+  ]);
   expect(events.filter(event => event.startsWith('delete '))).toEqual([
     'delete qe-run-0-setup-readonly',
     'delete qe-run-0-setup-author'
@@ -62,6 +72,14 @@ function fakePage(loginFailure: Error | undefined, events: string[]): Page {
     },
     close: async () => events.push('close page')
   } as unknown as Page;
+}
+
+function causeMessages(error: Error): string[] {
+  const cause = error.cause;
+  if (cause instanceof AggregateError) {
+    return cause.errors.map(item => item instanceof Error ? item.message : String(item));
+  }
+  return cause instanceof Error ? [cause.message] : [];
 }
 
 function response(status: number, body: object): APIResponse {
