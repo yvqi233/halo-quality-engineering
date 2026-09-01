@@ -44,6 +44,12 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./scripts/quality-gate.ps1 -Layer All -QuarantineMode Nightly
+      - name: Validate nightly artifact completeness
+        id: preflight
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/quality-gate-preflight.ps1 -Layer All
       - name: Start nightly evidence-upload measurement
         id: upload-start
         if: always()
@@ -156,24 +162,44 @@ jobs:
           if (-not $duration) { $duration = '0' }
           $kind = '${{ steps.gate.outputs.failureKind }}'
           if (-not $kind) { $kind = 'TEST_TOOL' }
+          $preflightResult = '${{ steps.preflight.outputs.result }}'
+          if (-not $preflightResult) { $preflightResult = 'FAIL' }
+          $preflightDuration = '${{ steps.preflight.outputs.durationSeconds }}'
+          if (-not $preflightDuration) { $preflightDuration = '0' }
+          $preflightKind = '${{ steps.preflight.outputs.failureKind }}'
+          if (-not $preflightKind) { $preflightKind = 'TEST_TOOL' }
           $uploads = @('${{ steps.upload-nightly-junit-xml.outcome }}', '${{ steps.upload-nightly-api-evidence.outcome }}', '${{ steps.upload-nightly-playwright-report.outcome }}', '${{ steps.upload-nightly-playwright-traces.outcome }}', '${{ steps.upload-nightly-playwright-videos.outcome }}', '${{ steps.upload-nightly-contract-evidence.outcome }}', '${{ steps.upload-nightly-gate-metadata.outcome }}', '${{ steps.upload-nightly-container-logs.outcome }}')
           $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
           $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
           $started = [DateTimeOffset]::Parse('${{ steps.upload-start.outputs.startedAt }}')
           $uploadDuration = [Math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds, 3)
-          $rows = @(
+          $validatedQuarantinePath = 'artifacts/quality-gate/L0/quarantine.yaml'
+          $quarantineLines = if (Test-Path -LiteralPath $validatedQuarantinePath -PathType Leaf) {
+            @(
+              '### Nightly quarantine visibility',
+              '',
+              'Validated quarantine records were exercised in nightly mode and remain separate from main-chain pass-rate evidence.',
+              '',
+              '```yaml',
+              (Get-Content -Raw -LiteralPath $validatedQuarantinePath).TrimEnd(),
+              '```'
+            )
+          } else {
+            @(
+              '### Nightly quarantine visibility',
+              '',
+              'Quarantine validation unavailable: L0 did not produce generated validated quarantine evidence.'
+            )
+          }
+          $rows = (@(
             '| layer | result | durationSeconds | failureKind | artifactName |',
             '|---|---|---:|---|---|',
             "| L3 | $testResult | $duration | $kind | nightly-regression |",
+            "| L3-evidence-preflight | $preflightResult | $preflightDuration | $preflightKind | nightly-required-artifacts |",
             "| L3-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | nightly evidence artifacts |",
-            '',
-            '### Nightly quarantine visibility',
-            '',
-            'Validated quarantine records are exercised in this nightly mode and remain separate from main-chain pass-rate evidence.',
-            '',
-            '```yaml',
-            (Get-Content -Raw docs/quarantine.yaml).TrimEnd(),
-            '```'
-          ) -join "`n"
+            ''
+          ) + $quarantineLines) -join "`n"
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
-          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or $uploadResult -ne 'PASS') { exit 1 }
+          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or
+              '${{ steps.preflight.outcome }}' -ne 'success' -or $preflightResult -ne 'PASS' -or
+              $uploadResult -ne 'PASS') { exit 1 }

@@ -32,6 +32,12 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./scripts/quality-gate.ps1 -Layer L0 -QuarantineMode MainChain
+      - name: Validate L0 artifact completeness
+        id: preflight
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/quality-gate-preflight.ps1 -Layer L0
       - name: Start L0 evidence-upload measurement
         id: upload-start
         if: always()
@@ -59,6 +65,7 @@ jobs:
             artifacts/quality-gate/L0/openapi-findings.json
             artifacts/quality-gate/L0/counts.json
             artifacts/quality-gate/L0/quarantine.json
+            artifacts/quality-gate/L0/quarantine.yaml
             artifacts/quality-gate/summary.jsonl
           if-no-files-found: error
           retention-days: 14
@@ -82,6 +89,12 @@ jobs:
           if (-not $duration) { $duration = '0' }
           $kind = '${{ steps.gate.outputs.failureKind }}'
           if (-not $kind) { $kind = 'TEST_TOOL' }
+          $preflightResult = '${{ steps.preflight.outputs.result }}'
+          if (-not $preflightResult) { $preflightResult = 'FAIL' }
+          $preflightDuration = '${{ steps.preflight.outputs.durationSeconds }}'
+          if (-not $preflightDuration) { $preflightDuration = '0' }
+          $preflightKind = '${{ steps.preflight.outputs.failureKind }}'
+          if (-not $preflightKind) { $preflightKind = 'TEST_TOOL' }
           $uploads = @('${{ steps.upload-l0-junit-xml.outcome }}', '${{ steps.upload-l0-contract-evidence.outcome }}', '${{ steps.upload-l0-container-logs.outcome }}')
           $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
           $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
@@ -91,10 +104,13 @@ jobs:
             '| layer | result | durationSeconds | failureKind | artifactName |',
             '|---|---|---:|---|---|',
             "| L0 | $testResult | $duration | $kind | contract |",
+            "| L0-evidence-preflight | $preflightResult | $preflightDuration | $preflightKind | l0-required-artifacts |",
             "| L0-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | l0-junit-xml + l0-contract-evidence + l0-container-logs |"
           ) -join "`n"
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
-          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or $uploadResult -ne 'PASS') { exit 1 }
+          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or
+              '${{ steps.preflight.outcome }}' -ne 'success' -or $preflightResult -ne 'PASS' -or
+              $uploadResult -ne 'PASS') { exit 1 }
 
   api-smoke:
     name: L1 API smoke
@@ -121,6 +137,12 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./scripts/quality-gate.ps1 -Layer L1 -QuarantineMode MainChain
+      - name: Validate L1 artifact completeness
+        id: preflight
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/quality-gate-preflight.ps1 -Layer L1
       - name: Start L1 evidence-upload measurement
         id: upload-start
         if: always()
@@ -156,6 +178,7 @@ jobs:
           path: |
             artifacts/quality-gate/L1/counts.json
             artifacts/quality-gate/L1/quarantine.json
+            artifacts/quality-gate/L1/quarantine.yaml
             artifacts/quality-gate/summary.jsonl
           if-no-files-found: error
           retention-days: 14
@@ -179,6 +202,12 @@ jobs:
           if (-not $duration) { $duration = '0' }
           $kind = '${{ steps.gate.outputs.failureKind }}'
           if (-not $kind) { $kind = 'TEST_TOOL' }
+          $preflightResult = '${{ steps.preflight.outputs.result }}'
+          if (-not $preflightResult) { $preflightResult = 'FAIL' }
+          $preflightDuration = '${{ steps.preflight.outputs.durationSeconds }}'
+          if (-not $preflightDuration) { $preflightDuration = '0' }
+          $preflightKind = '${{ steps.preflight.outputs.failureKind }}'
+          if (-not $preflightKind) { $preflightKind = 'TEST_TOOL' }
           $uploads = @('${{ steps.upload-l1-junit-xml.outcome }}', '${{ steps.upload-l1-api-evidence.outcome }}', '${{ steps.upload-l1-gate-metadata.outcome }}', '${{ steps.upload-l1-container-logs.outcome }}')
           $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
           $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
@@ -188,10 +217,13 @@ jobs:
             '| layer | result | durationSeconds | failureKind | artifactName |',
             '|---|---|---:|---|---|',
             "| L1 | $testResult | $duration | $kind | api-smoke |",
+            "| L1-evidence-preflight | $preflightResult | $preflightDuration | $preflightKind | l1-required-artifacts |",
             "| L1-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | l1-junit-xml + l1-api-evidence + l1-gate-metadata + l1-container-logs |"
           ) -join "`n"
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
-          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or $uploadResult -ne 'PASS') { exit 1 }
+          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or
+              '${{ steps.preflight.outcome }}' -ne 'success' -or $preflightResult -ne 'PASS' -or
+              $uploadResult -ne 'PASS') { exit 1 }
 
   chromium-e2e:
     name: L2 Chromium E2E
@@ -223,6 +255,12 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: ./scripts/quality-gate.ps1 -Layer L2 -QuarantineMode MainChain
+      - name: Validate L2 artifact completeness
+        id: preflight
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/quality-gate-preflight.ps1 -Layer L2
       - name: Start L2 evidence-upload measurement
         id: upload-start
         if: always()
@@ -276,6 +314,7 @@ jobs:
           path: |
             artifacts/quality-gate/L2/counts.json
             artifacts/quality-gate/L2/quarantine.json
+            artifacts/quality-gate/L2/quarantine.yaml
             artifacts/quality-gate/summary.jsonl
           if-no-files-found: error
           retention-days: 14
@@ -299,6 +338,12 @@ jobs:
           if (-not $duration) { $duration = '0' }
           $kind = '${{ steps.gate.outputs.failureKind }}'
           if (-not $kind) { $kind = 'TEST_TOOL' }
+          $preflightResult = '${{ steps.preflight.outputs.result }}'
+          if (-not $preflightResult) { $preflightResult = 'FAIL' }
+          $preflightDuration = '${{ steps.preflight.outputs.durationSeconds }}'
+          if (-not $preflightDuration) { $preflightDuration = '0' }
+          $preflightKind = '${{ steps.preflight.outputs.failureKind }}'
+          if (-not $preflightKind) { $preflightKind = 'TEST_TOOL' }
           $uploads = @('${{ steps.upload-l2-playwright-report.outcome }}', '${{ steps.upload-l2-playwright-traces.outcome }}', '${{ steps.upload-l2-playwright-videos.outcome }}', '${{ steps.upload-l2-gate-metadata.outcome }}', '${{ steps.upload-l2-container-logs.outcome }}')
           $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
           $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
@@ -308,7 +353,10 @@ jobs:
             '| layer | result | durationSeconds | failureKind | artifactName |',
             '|---|---|---:|---|---|',
             "| L2 | $testResult | $duration | $kind | chromium-e2e |",
+            "| L2-evidence-preflight | $preflightResult | $preflightDuration | $preflightKind | l2-required-artifacts |",
             "| L2-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | l2-playwright-report + l2-playwright-traces + l2-playwright-videos + l2-gate-metadata + l2-container-logs |"
           ) -join "`n"
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
-          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or $uploadResult -ne 'PASS') { exit 1 }
+          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or
+              '${{ steps.preflight.outcome }}' -ne 'success' -or $preflightResult -ne 'PASS' -or
+              $uploadResult -ne 'PASS') { exit 1 }

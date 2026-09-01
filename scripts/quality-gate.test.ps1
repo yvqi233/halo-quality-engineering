@@ -4,6 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $runnerPath = Join-Path $PSScriptRoot 'quality-gate.ps1'
+$preflightPath = Join-Path $PSScriptRoot 'quality-gate-preflight.ps1'
 $prWorkflowPath = Join-Path $repoRoot '.github/workflows/quality-gate.yml'
 $nightlyWorkflowPath = Join-Path $repoRoot '.github/workflows/nightly.yml'
 
@@ -28,6 +29,19 @@ function Assert-Ordered {
         if ($next -lt 0) { throw "$Message Missing token: $token" }
         $position = $next
     }
+}
+
+function Assert-Throws {
+    param([scriptblock]$Body, [string]$Pattern, [string]$Message)
+
+    $failure = $null
+    try {
+        & $Body
+    } catch {
+        $failure = $_.Exception.Message
+    }
+    Assert-True ($null -ne $failure) "$Message Expected an exception."
+    Assert-Match $failure $Pattern $Message
 }
 
 $tokens = $null
@@ -59,6 +73,46 @@ $greenLayers = @(
 $greenOutcome = Get-GateOutcome -RequestedLayer All -RequestedCount 3 -Results $greenLayers
 Assert-True ($greenOutcome.result -eq 'PASS' -and $greenOutcome.exitCode -eq 0) 'Three formal green layers must return exit 0.'
 Assert-True ($greenOutcome.durationSeconds -eq 6.6) 'Formal All duration must be the measured layer sum.'
+$validOrdinaryCases = @('E01', 'E02', 'I01', 'I02') | ForEach-Object {
+    [pscustomobject]@{ name = "$_ case"; classname = 'fixture' }
+}
+Assert-ExactCaseInventory -Cases $validOrdinaryCases -ExpectedIds @('E01', 'E02', 'I01', 'I02') `
+    -PrefixPattern '(?:E|I)\d{2}' -Description 'valid L2 ordinary fixture'
+$wrongInfrastructureCases = @('E01', 'E02', 'I03', 'I04') | ForEach-Object {
+    [pscustomobject]@{ name = "$_ case"; classname = 'fixture' }
+}
+Assert-Throws {
+    Assert-ExactCaseInventory -Cases $wrongInfrastructureCases -ExpectedIds @('E01', 'E02', 'I01', 'I02') `
+        -PrefixPattern '(?:E|I)\d{2}' -Description 'wrong L2 infrastructure fixture'
+} 'inventory mismatch' 'I03/I04 must not satisfy the I01/I02 infrastructure contract.'
+$extraOrdinaryCases = @($validOrdinaryCases) + @([pscustomobject]@{ name = 'unexpected helper'; classname = 'fixture' })
+Assert-Throws {
+    Assert-ExactCaseInventory -Cases $extraOrdinaryCases -ExpectedIds @('E01', 'E02', 'I01', 'I02') `
+        -PrefixPattern '(?:E|I)\d{2}' -Description 'extra L2 ordinary fixture'
+} 'unclassified' 'Unclassified ordinary records must fail the exact inventory.'
+$extraExpiryCases = @(
+    [pscustomobject]@{ name = 'E10 case'; classname = 'fixture' },
+    [pscustomobject]@{ name = 'unexpected expiry helper'; classname = 'fixture' }
+)
+Assert-Throws {
+    Assert-ExactCaseInventory -Cases $extraExpiryCases -ExpectedIds @('E10') `
+        -PrefixPattern 'E\d{2}' -Description 'extra L2 expiry fixture'
+} 'unclassified' 'Expiry must contain only E10.'
+$allOrdinaryQuarantined = @($ExpectedJourneyIds[0..8] | ForEach-Object { [pscustomobject]@{ testId = $_ } })
+$allOrdinaryExcluded = @(Get-ExcludedIds -Entries $allOrdinaryQuarantined -AllowedIds $ExpectedJourneyIds)
+$noSelectedOrdinary = @($ExpectedJourneyIds[0..8] | Where-Object { $_ -notin $allOrdinaryExcluded })
+Assert-True ($noSelectedOrdinary.Count -eq 0) 'All ordinary journeys fixture must select zero E journeys.'
+Assert-True (-not [regex]::IsMatch($runner, 'if\s*\(\$selected\.Count\s*-eq\s*0\)\s*\{\s*return')) `
+    'I01/I02 must still execute when every ordinary E journey is quarantined.'
+$markerRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-gate-marker-$([Guid]::NewGuid().ToString('N'))"
+try {
+    New-Item -ItemType Directory -Force -Path $markerRoot | Out-Null
+    Set-Content -LiteralPath (Join-Path $markerRoot 'SANITIZATION_FAILED.txt') -Value 'blocked'
+    Assert-True (Test-PlaywrightToolFailureArtifact -ArtifactPath $markerRoot) `
+        'A standalone sanitizer marker must classify the Playwright failure as TEST_TOOL.'
+} finally {
+    Remove-Item -LiteralPath $markerRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 Assert-Match $runner 'validate-quarantine\.mjs' 'L0 must validate quarantine policy.'
 Assert-Match $runner 'capture-openapi\.ps1' 'L0 must consume the reviewed live OpenAPI capture interface.'
 Assert-Match $runner 'halo-2\.26-openapi\.json' 'L0 must compare against the committed baseline.'
@@ -68,12 +122,14 @@ Assert-Ordered $runner @("api-tests/build/classes/java/test'", "api-tests/build/
 Assert-Match $runner ':api-tests:integrationTest' 'L1 must use the existing integration task.'
 Assert-Match $runner 'ExpectedApiScenarioIds' 'L1 must enforce the exact API scenario inventory.'
 Assert-Match $runner "@\('E01'.*'E10'\)" 'L2 must enforce E01-E10.'
+Assert-Match $runner 'Assert-ExactCaseInventory' 'L2 must reject extra or misidentified test records.'
 Assert-Match $runner '--grep-invert' 'Ordinary journeys must exclude E10.'
 Assert-Match $runner '--no-deps' 'E10 must not reuse ordinary setup dependencies.'
 Assert-Match $runner 'PT30M' 'Ordinary journeys need the normal session timeout.'
 Assert-Match $runner 'PT5S' 'E10 needs its own short-lived environment.'
 Assert-Match $runner 'collect-evidence\.ps1' 'Layer failures must collect redacted evidence.'
 Assert-Match $runner 'cleanup failed:[\s\S]*?Set-GateFailureKind ''TEST_TOOL''' 'Playwright cleanup failures must be classified as test-tool failures.'
+Assert-Match $runner 'SANITIZATION_FAILED\.txt' 'Playwright sanitizer marker classification is missing.'
 Assert-Match $runner "environment\.ps1.*-Action Down" 'Every layer phase must tear down.'
 Assert-Ordered $runner @('Invoke-GateBody', '& $collectorScript', '-Action Down') 'Evidence must run after the test body and before final teardown.'
 Assert-Match $runner "\[ordered\]@\{\s*layer\s*=.*\s*result\s*=.*\s*durationSeconds\s*=.*\s*failureKind\s*=.*\s*artifactName\s*=" 'Summary schema is incomplete or reordered.'
@@ -117,14 +173,45 @@ Assert-Match $prWorkflow 'l2-playwright-report' 'L2 report artifact name is miss
 Assert-Match $prWorkflow 'l2-playwright-traces' 'L2 trace artifact name is missing.'
 Assert-Match $prWorkflow 'l2-playwright-videos' 'L2 video artifact name is missing.'
 Assert-Match $prWorkflow 'evidence-upload' 'Test and evidence-upload summary rows must be separate.'
+foreach ($layerName in @('L0', 'L1', 'L2')) {
+    Assert-Match $prWorkflow "Validate $layerName artifact completeness[\s\S]*?if:\s+always\(\)[\s\S]*?continue-on-error:\s+true[\s\S]*?quality-gate-preflight\.ps1 -Layer $layerName" `
+        "$layerName must run a non-blocking completeness preflight before unconditional uploads."
+    Assert-Match $prWorkflow "$layerName-evidence-preflight" "$layerName preflight needs its own Summary row."
+}
 
 $nightlyWorkflow = Get-Content -Raw $nightlyWorkflowPath
 Assert-Match $nightlyWorkflow 'schedule:' 'Nightly workflow must have a schedule.'
 Assert-Match $nightlyWorkflow 'nightly-regression:' 'Nightly workflow must expose the L3 job name.'
 Assert-Match $nightlyWorkflow 'timeout-minutes:\s+30' 'Nightly timeout must be 30 minutes.'
 Assert-Match $nightlyWorkflow '-QuarantineMode Nightly' 'Nightly must execute quarantined cases visibly.'
-Assert-Match $nightlyWorkflow 'docs/quarantine\.yaml' 'Nightly summary must expose quarantine records.'
+Assert-Match $nightlyWorkflow 'Validate nightly artifact completeness[\s\S]*?if:\s+always\(\)[\s\S]*?continue-on-error:\s+true[\s\S]*?quality-gate-preflight\.ps1 -Layer All' `
+    'Nightly must run a non-blocking completeness preflight before unconditional uploads.'
+Assert-Match $nightlyWorkflow 'L3-evidence-preflight' 'Nightly preflight needs its own Summary row.'
+Assert-Match $nightlyWorkflow 'artifacts/quality-gate/L0/quarantine\.yaml' 'Nightly summary must use generated validated quarantine evidence.'
+Assert-Match $nightlyWorkflow 'validation unavailable' 'Nightly summary must identify unavailable validation.'
+Assert-True (-not $nightlyWorkflow.Contains('Get-Content -Raw docs/quarantine.yaml')) `
+    'Nightly must not label the unvalidated source quarantine file as validated.'
 Assert-True (-not [regex]::IsMatch($nightlyWorkflow, '(?i)firefox|20-run|stability\.ps1')) 'Task 9 must not claim Task 10 Firefox or stability results.'
+
+Assert-True (Test-Path -LiteralPath $preflightPath) 'Missing quality-gate artifact preflight script.'
+$preflightTokens = $null
+$preflightParseErrors = $null
+[void][Management.Automation.Language.Parser]::ParseFile($preflightPath, [ref]$preflightTokens, [ref]$preflightParseErrors)
+Assert-True ($preflightParseErrors.Count -eq 0) "quality-gate-preflight.ps1 has parse errors: $($preflightParseErrors.Message -join '; ')"
+. $preflightPath
+$summaryOnlyRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-gate-preflight-$([Guid]::NewGuid().ToString('N'))"
+try {
+    $summaryParent = Join-Path $summaryOnlyRoot 'artifacts/quality-gate'
+    New-Item -ItemType Directory -Force -Path $summaryParent | Out-Null
+    Set-Content -LiteralPath (Join-Path $summaryParent 'summary.jsonl') -Value '{}'
+    $missingWithSummary = @(Get-MissingQualityGateArtifacts -RequestedLayer L0 -RepositoryRoot $summaryOnlyRoot)
+    Assert-True ($missingWithSummary -contains 'api-tests/build/test-results/test/*.xml') `
+        'A summary file must not mask missing L0 JUnit XML.'
+    Assert-True ($missingWithSummary -contains 'artifacts/quality-gate/L0/live-openapi.json') `
+        'A summary file must not mask missing L0 OpenAPI evidence.'
+} finally {
+    Remove-Item -LiteralPath $summaryOnlyRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 $artifactNames = [regex]::Matches("$prWorkflow`n$nightlyWorkflow", '(?m)^\s+name:\s+((?:l[0-3]|nightly)-[a-z0-9-]+)\s*$') |
     ForEach-Object { $_.Groups[1].Value }

@@ -249,6 +249,30 @@ function Assert-ExactIds {
     }
 }
 
+function Assert-ExactCaseInventory {
+    param([object[]]$Cases, [string[]]$ExpectedIds, [string]$PrefixPattern, [string]$Description)
+
+    $actualIds = [Collections.Generic.List[string]]::new()
+    $unclassified = [Collections.Generic.List[string]]::new()
+    foreach ($case in $Cases) {
+        $match = [regex]::Match($case.name, "^($PrefixPattern)\s")
+        if ($match.Success) {
+            [void]$actualIds.Add($match.Groups[1].Value)
+        } else {
+            [void]$unclassified.Add($case.name)
+        }
+    }
+    $difference = if ($ExpectedIds.Count -eq 0 -and $actualIds.Count -eq 0) {
+        @()
+    } else {
+        @(Compare-Object @($ExpectedIds | Sort-Object) @($actualIds | Sort-Object))
+    }
+    if ($unclassified.Count -gt 0 -or $difference.Count -gt 0 -or $Cases.Count -ne $ExpectedIds.Count) {
+        $unclassifiedText = if ($unclassified.Count -eq 0) { 'none' } else { $unclassified -join ', ' }
+        throw "$Description inventory mismatch. Expected $($ExpectedIds.Count) exact records, observed $($Cases.Count); unclassified: $unclassifiedText."
+    }
+}
+
 function Write-Counts {
     param([string]$Path, [Collections.Specialized.OrderedDictionary]$Counts)
 
@@ -349,6 +373,17 @@ function Invoke-L1 {
     return Complete-Layer -Name 'L1' -ArtifactName 'api-smoke' -Phases @($phase)
 }
 
+function Test-PlaywrightToolFailureArtifact {
+    param([string]$ArtifactPath)
+
+    if (Test-Path -LiteralPath (Join-Path $ArtifactPath 'SANITIZATION_FAILED.txt')) {
+        return $true
+    }
+    $junitPath = Join-Path $ArtifactPath 'junit.xml'
+    return (Test-Path -LiteralPath $junitPath) -and
+        (Get-Content -Raw -LiteralPath $junitPath) -match 'cleanup failed:|Credential-safe artifact publishing blocked'
+}
+
 function Invoke-Playwright {
     param([string]$ArtifactPath, [string[]]$Arguments, [string]$Description)
 
@@ -366,9 +401,7 @@ function Invoke-Playwright {
         try {
             Invoke-NativeCommand -FilePath $playwrightCommand -Arguments $Arguments -Description $Description
         } catch {
-            $junitPath = Join-Path $ArtifactPath 'junit.xml'
-            if ((Test-Path -LiteralPath $junitPath) -and
-                (Get-Content -Raw -LiteralPath $junitPath) -match 'cleanup failed:|SANITIZATION_FAILED|Credential-safe artifact publishing blocked') {
+            if (Test-PlaywrightToolFailureArtifact -ArtifactPath $ArtifactPath) {
                 Set-GateFailureKind 'TEST_TOOL'
             }
             throw
@@ -428,7 +461,6 @@ function Invoke-L2 {
         $l2State.excluded = @(Get-ExcludedIds -Entries $l2State.entries -AllowedIds $ExpectedJourneyIds)
         $selected = @($ExpectedJourneyIds[0..8] | Where-Object { $_ -notin $l2State.excluded })
         $l2State.ordinaryCount = $selected.Count
-        if ($selected.Count -eq 0) { return }
         $excludedPattern = @('@session-expiry') + @($l2State.excluded | Where-Object { $_ -ne 'E10' })
         Set-GateFailureKind 'PRODUCT'
         Invoke-Playwright -ArtifactPath (Join-Path $layerRoot 'ordinary') `
@@ -436,14 +468,9 @@ function Invoke-L2 {
             -Description 'L2 ordinary Chromium journeys'
         Set-GateFailureKind 'TEST_TOOL'
         $cases = @(Get-JUnitCases (Join-Path $layerRoot 'ordinary'))
-        Assert-ExactIds -Cases $cases -ExpectedIds $selected -PrefixPattern 'E\d{2}' -Description 'L2 ordinary journey'
-        $infrastructureIds = @($cases | ForEach-Object {
-            $match = [regex]::Match($_.name, '^(I\d{2})\s')
-            if ($match.Success) { $match.Groups[1].Value }
-        })
-        if (@($infrastructureIds | Sort-Object -Unique).Count -ne 2 -or $infrastructureIds.Count -ne 2) {
-            throw "L2 ordinary run expected separate I01/I02 records, observed $($infrastructureIds -join ', ')."
-        }
+        $expectedOrdinaryIds = @($selected) + @('I01', 'I02')
+        Assert-ExactCaseInventory -Cases $cases -ExpectedIds $expectedOrdinaryIds `
+            -PrefixPattern '(?:E|I)\d{2}' -Description 'L2 ordinary journey and infrastructure'
         $l2State.infrastructureCount = 2
     }.GetNewClosure()
 
@@ -462,7 +489,8 @@ function Invoke-L2 {
                 -Description 'L2 E10 Chromium journey'
             Set-GateFailureKind 'TEST_TOOL'
             $cases = @(Get-JUnitCases (Join-Path $layerRoot 'expiry'))
-            Assert-ExactIds -Cases $cases -ExpectedIds @('E10') -PrefixPattern 'E\d{2}' -Description 'L2 expiry journey'
+            Assert-ExactCaseInventory -Cases $cases -ExpectedIds @('E10') `
+                -PrefixPattern 'E\d{2}' -Description 'L2 expiry journey'
             $l2State.expiryCount = 1
         }.GetNewClosure()
         $expiryPhase = Invoke-LayerPhase -Name 'L2-expiry' -SessionTimeout 'PT5S' `
