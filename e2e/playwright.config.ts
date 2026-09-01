@@ -1,8 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const artifactRoot = process.env.PW_ARTIFACT_DIR ?? 'artifacts';
+
 export default defineConfig({
   testDir: '.',
-  outputDir: 'artifacts/test-results',
+  outputDir: `${artifactRoot}/test-results`,
   timeout: 60_000,
   retries: 0,
   workers: process.env.CI ? 2 : 1,
@@ -13,16 +15,34 @@ export default defineConfig({
     video: 'retain-on-failure'
   },
   reporter: [
-    ['html', { outputFolder: 'artifacts/html-report', open: 'never' }],
-    ['junit', { outputFile: 'artifacts/junit.xml' }]
+    ['html', { outputFolder: `${artifactRoot}/html-report`, open: 'never' }],
+    ['junit', { outputFile: `${artifactRoot}/junit.xml` }],
+    ['./reporters/credential-safe-reporter.ts', { artifactRoot }]
   ],
   projects: [
-    { name: 'setup', testMatch: /fixtures[\\/]auth\.setup\.ts/ },
+    {
+      name: 'setup',
+      testMatch: /fixtures[\\/]auth\.setup\.ts/,
+      workers: 1,
+      teardown: 'teardown'
+    },
+    {
+      name: 'teardown',
+      testMatch: /fixtures[\\/]auth\.teardown\.ts/,
+      workers: 1
+    },
     {
       name: 'chromium',
       testMatch: /specs[\\/].*\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup']
+    },
+    { name: 'unit', testMatch: /unit[\\/].*\.spec\.ts/, workers: 1 },
+    {
+      name: 'probe',
+      testMatch: /probes[\\/].*\.probe\.ts/,
+      workers: 1,
+      use: { ...devices['Desktop Chrome'] }
     }
   ]
 });

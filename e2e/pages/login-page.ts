@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { registerSecret } from '../reporters/secret-registry';
 
 export class LoginPage {
   constructor(private readonly page: Page) {}
@@ -8,6 +9,7 @@ export class LoginPage {
   }
 
   async login(username: string, password: string): Promise<void> {
+    await registerSecret(password);
     await this.page.getByLabel('Account').fill(username);
     await this.page.getByLabel('Password').fill(password);
     await this.page.getByRole('button', { name: 'Login' }).click();

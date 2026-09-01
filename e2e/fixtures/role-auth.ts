@@ -1,17 +1,24 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { Browser, BrowserContext, Page } from '@playwright/test';
+import type { Browser, BrowserContext } from '@playwright/test';
 import { LoginPage } from '../pages/login-page';
+import { registerSecret } from '../reporters/secret-registry';
+import {
+  attachCleanupFailures,
+  type CleanupFailure,
+  runReverseCleanup
+} from './cleanup';
+import { authDirectory, type CanonicalStatePaths, stateDestination } from './role-state';
 
-const ADMIN_USERNAME = 'qe-admin';
-const ADMIN_PASSWORD = 'HaloQE!2026';
+export const ADMIN_USERNAME = 'qe-admin';
+export const ADMIN_PASSWORD = 'HaloQE!2026';
 const IDENTITY_PATH = '/apis/uc.api.halo.run/v1alpha1/users/-';
 
 export type RoleName = 'admin' | 'author' | 'readonly';
 
 export interface RoleState {
   username: string;
-  storageStatePath: string;
+  storageState: string | Awaited<ReturnType<BrowserContext['storageState']>>;
 }
 
 export interface AuthenticatedRoles {
@@ -19,7 +26,9 @@ export interface AuthenticatedRoles {
   author: RoleState;
   readonly: RoleState;
   adminContext: BrowserContext;
-  cleanup(): Promise<string[]>;
+  createdUsers: string[];
+  cleanup(): Promise<CleanupFailure[]>;
+  closeContexts(): Promise<CleanupFailure[]>;
 }
 
 interface CreatedUser {
@@ -27,14 +36,22 @@ interface CreatedUser {
   password: string;
 }
 
+interface ProvisionOptions {
+  owner?: 'setup' | 'test';
+  canonicalPaths?: CanonicalStatePaths;
+}
+
 export async function createAuthenticatedRoles(
   browser: Browser,
   baseURL: string,
-  scope: string
+  scope: string,
+  options: ProvisionOptions = {}
 ): Promise<AuthenticatedRoles> {
-  const authDirectory = path.resolve(__dirname, '..', '.auth');
-  await mkdir(authDirectory, { recursive: true });
+  const owner = options.owner ?? 'test';
+  const paths = options.canonicalPaths;
+  if (owner === 'setup' && !paths) throw new Error('setup role provisioning requires canonical paths');
 
+  await mkdir(authDirectory(), { recursive: true });
   const contexts: BrowserContext[] = [];
   const createdUsers: CreatedUser[] = [];
   const provisioningAdminContext = await loginContext(browser, baseURL, ADMIN_USERNAME, ADMIN_PASSWORD);
@@ -44,7 +61,7 @@ export async function createAuthenticatedRoles(
     const admin = await saveVerifiedState(
       provisioningAdminContext,
       ADMIN_USERNAME,
-      path.join(authDirectory, 'admin.json')
+      paths ? stateDestination(owner, paths, 'admin') : undefined
     );
     const authorUser = await createUser(provisioningAdminContext, `${scope}-author`, [
       'role-template-post-author',
@@ -56,66 +73,138 @@ export async function createAuthenticatedRoles(
 
     const authorContext = await loginContext(browser, baseURL, authorUser.username, authorUser.password);
     contexts.push(authorContext);
-    const author = await saveVerifiedState(authorContext, authorUser.username, path.join(authDirectory, 'author.json'));
+    const author = await saveVerifiedState(
+      authorContext,
+      authorUser.username,
+      paths ? stateDestination(owner, paths, 'author') : undefined
+    );
 
     const readonlyContext = await loginContext(browser, baseURL, readonlyUser.username, readonlyUser.password);
     contexts.push(readonlyContext);
     const readonly = await saveVerifiedState(
       readonlyContext,
       readonlyUser.username,
-      path.join(authDirectory, 'readonly.json')
+      paths ? stateDestination(owner, paths, 'readonly') : undefined
     );
+
     const adminContext = await loginContext(browser, baseURL, ADMIN_USERNAME, ADMIN_PASSWORD);
     contexts.push(adminContext);
+    let closed = false;
+
+    const closeContexts = async (): Promise<CleanupFailure[]> => {
+      if (closed) return [];
+      closed = true;
+      return closeAllContexts(contexts);
+    };
 
     return {
       admin,
       author,
       readonly,
       adminContext,
+      createdUsers: createdUsers.map(user => user.username),
+      closeContexts,
       cleanup: async () => {
-        const failures: string[] = [];
-        let cleanupContext = adminContext;
-        try {
-          const identityResponse = await cleanupContext.request.get(IDENTITY_PATH, {
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-          });
-          const identity = identityResponse.ok() ? ((await identityResponse.json()) as { name?: string }) : {};
-          if (identity.name !== ADMIN_USERNAME) {
-            cleanupContext = await loginContext(browser, baseURL, ADMIN_USERNAME, ADMIN_PASSWORD);
-            contexts.push(cleanupContext);
-          }
-        } catch {
-          cleanupContext = await loginContext(browser, baseURL, ADMIN_USERNAME, ADMIN_PASSWORD);
-          contexts.push(cleanupContext);
-        }
-        for (const user of [...createdUsers].reverse()) {
-          try {
-            const response = await cleanupContext.request.delete(`/api/v1alpha1/users/${encodeURIComponent(user.username)}`);
-            if (!response.ok() && response.status() !== 404) {
-              failures.push(`delete user ${user.username} returned HTTP ${response.status()}`);
-            }
-          } catch (error) {
-            failures.push(`delete user ${user.username} failed: ${errorMessage(error)}`);
-          }
-        }
-        for (const context of [...contexts].reverse()) {
-          await context.close().catch(error => failures.push(`close role context failed: ${errorMessage(error)}`));
-        }
+        const failures = await cleanupUsers(browser, baseURL, createdUsers, adminContext, contexts);
+        closed = true;
         return failures;
       }
     };
   } catch (error) {
-    for (const user of [...createdUsers].reverse()) {
-      await provisioningAdminContext.request
-        .delete(`/api/v1alpha1/users/${encodeURIComponent(user.username)}`)
-        .catch(() => {});
-    }
-    for (const context of [...contexts].reverse()) {
-      await context.close().catch(() => {});
-    }
-    throw error;
+    const failures = await cleanupUsers(
+      browser,
+      baseURL,
+      createdUsers,
+      provisioningAdminContext,
+      contexts
+    );
+    throw attachCleanupFailures(error, failures);
   }
+}
+
+export async function cleanupNamedUsers(
+  browser: Browser,
+  baseURL: string,
+  usernames: readonly string[]
+): Promise<CleanupFailure[]> {
+  const contexts: BrowserContext[] = [];
+  const failures: CleanupFailure[] = [];
+  let context: BrowserContext;
+  try {
+    context = await loginContext(browser, baseURL, ADMIN_USERNAME, ADMIN_PASSWORD);
+    contexts.push(context);
+  } catch (error) {
+    failures.push({ operation: 'authenticate', resourceName: ADMIN_USERNAME, message: errorMessage(error) });
+    context = await browser.newContext({ baseURL });
+    contexts.push(context);
+  }
+
+  try {
+    failures.push(...await deleteUsers(context, usernames));
+  } finally {
+    failures.push(...await closeAllContexts(contexts));
+  }
+  return failures;
+}
+
+async function cleanupUsers(
+  browser: Browser,
+  baseURL: string,
+  users: readonly CreatedUser[],
+  initialContext: BrowserContext,
+  contexts: BrowserContext[]
+): Promise<CleanupFailure[]> {
+  const failures: CleanupFailure[] = [];
+  let cleanupContext = initialContext;
+  let refreshRequired = false;
+  let initialAuthenticationError: unknown;
+  try {
+    const identity = await verifiedIdentity(cleanupContext);
+    refreshRequired = identity !== ADMIN_USERNAME;
+  } catch (error) {
+    refreshRequired = true;
+    initialAuthenticationError = error;
+  }
+
+  if (refreshRequired) {
+    try {
+      cleanupContext = await loginContext(browser, baseURL, ADMIN_USERNAME, ADMIN_PASSWORD);
+      contexts.push(cleanupContext);
+    } catch (refreshError) {
+      const initial = initialAuthenticationError
+        ? `initial session: ${errorMessage(initialAuthenticationError)}; `
+        : '';
+      failures.push({
+        operation: 'authenticate',
+        resourceName: ADMIN_USERNAME,
+        message: `${initial}refresh: ${errorMessage(refreshError)}`
+      });
+    }
+  }
+
+  try {
+    failures.push(...await deleteUsers(cleanupContext, users.map(user => user.username)));
+  } finally {
+    failures.push(...await closeAllContexts(contexts));
+  }
+  return failures;
+}
+
+async function deleteUsers(context: BrowserContext, usernames: readonly string[]): Promise<CleanupFailure[]> {
+  return runReverseCleanup(usernames, 'delete user', async username => {
+    const response = await context.request.delete(`/api/v1alpha1/users/${encodeURIComponent(username)}`);
+    if (!response.ok() && response.status() !== 404) throw new Error(`HTTP ${response.status()}`);
+  });
+}
+
+async function closeAllContexts(contexts: BrowserContext[]): Promise<CleanupFailure[]> {
+  const pending = contexts.splice(0, contexts.length);
+  return runReverseCleanup(
+    pending,
+    'close context',
+    context => context.close(),
+    () => 'browser-context'
+  );
 }
 
 async function loginContext(
@@ -124,6 +213,7 @@ async function loginContext(
   username: string,
   password: string
 ): Promise<BrowserContext> {
+  await registerSecret(password);
   const context = await browser.newContext({ baseURL });
   try {
     const page = await context.newPage();
@@ -142,24 +232,28 @@ async function loginContext(
 async function saveVerifiedState(
   context: BrowserContext,
   expectedUsername: string,
-  storageStatePath: string
+  destination?: string
 ): Promise<RoleState> {
+  const principal = await verifiedIdentity(context);
+  if (principal !== expectedUsername) throw new Error('identity verification returned an unexpected principal');
+  if (destination) {
+    await context.storageState({ path: destination });
+    return { username: expectedUsername, storageState: destination };
+  }
+  return { username: expectedUsername, storageState: await context.storageState() };
+}
+
+async function verifiedIdentity(context: BrowserContext): Promise<string | undefined> {
   const response = await context.request.get(IDENTITY_PATH, {
     headers: { 'X-Requested-With': 'XMLHttpRequest' }
   });
-  if (!response.ok()) {
-    throw new Error(`identity verification returned HTTP ${response.status()}`);
-  }
-  const identity = (await response.json()) as { name?: string };
-  if (identity.name !== expectedUsername) {
-    throw new Error(`identity verification returned an unexpected principal`);
-  }
-  await context.storageState({ path: storageStatePath });
-  return { username: expectedUsername, storageStatePath };
+  if (!response.ok()) throw new Error(`identity verification returned HTTP ${response.status()}`);
+  return ((await response.json()) as { name?: string }).name;
 }
 
 async function createUser(context: BrowserContext, username: string, roles: string[]): Promise<CreatedUser> {
   const password = `fixture-${username}-password`;
+  await registerSecret(password);
   const response = await context.request.post('/apis/api.console.halo.run/v1alpha1/users', {
     data: {
       name: username,
@@ -169,9 +263,7 @@ async function createUser(context: BrowserContext, username: string, roles: stri
       roles: [...roles].sort()
     }
   });
-  if (!response.ok()) {
-    throw new Error(`create user ${username} returned HTTP ${response.status()}`);
-  }
+  if (!response.ok()) throw new Error(`create user ${username} returned HTTP ${response.status()}`);
   return { username, password };
 }
 

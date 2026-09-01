@@ -7,6 +7,7 @@ test('E04 author creates a draft through the editor', async ({ authorPage, haloA
   const title = `${haloApi.unique('e04', 'ui')}-title`;
   await posts.open();
   await posts.createDraft(title);
+  haloApi.reserveUiCreation(title);
 
   let observed;
   await expect.poll(async () => {
@@ -17,7 +18,7 @@ test('E04 author creates a draft through the editor', async ({ authorPage, haloA
   }).toBe('DRAFT');
 });
 
-test('E05 admin publishes an API draft through Posts', async ({ adminPage, haloApi }) => {
+test('E05 admin publishes an API draft through Posts', async ({ adminPage, browser, haloApi }) => {
   const ref = await haloApi.createDraft('qe-admin', 'e05');
   await expect.poll(async () => (await haloApi.consolePost(ref)).post?.status?.phase).toBe('DRAFT');
 
@@ -33,6 +34,15 @@ test('E05 admin publishes an API draft through Posts', async ({ adminPage, haloA
   }).toBe('PUBLISHED');
   await expect.poll(async () => (await haloApi.publicPost(ref)).status).toBe(200);
   expect(permalink).toBeTruthy();
+
+  const anonymous = await browser.newContext();
+  try {
+    const page = await anonymous.newPage();
+    await page.goto(permalink!);
+    await expect(page.getByRole('heading', { name: ref.title, exact: true, level: 1 })).toBeVisible();
+  } finally {
+    await anonymous.close();
+  }
 });
 
 test('E06 API-published title is visible at exact anonymous permalink', async ({ browser, haloApi }) => {
@@ -48,10 +58,13 @@ test('E06 API-published title is visible at exact anonymous permalink', async ({
   expect(permalink).toBeTruthy();
 
   const anonymous = await browser.newContext();
-  const page = await anonymous.newPage();
-  await page.goto(permalink!);
-  await expect(page.getByRole('heading', { name: ref.title, exact: true, level: 1 })).toBeVisible();
-  await anonymous.close();
+  try {
+    const page = await anonymous.newPage();
+    await page.goto(permalink!);
+    await expect(page.getByRole('heading', { name: ref.title, exact: true, level: 1 })).toBeVisible();
+  } finally {
+    await anonymous.close();
+  }
 });
 
 test('E07 admin unpublishes and anonymous permalink ceases exposure', async ({ adminPage, browser, haloApi }) => {
@@ -72,11 +85,14 @@ test('E07 admin unpublishes and anonymous permalink ceases exposure', async ({ a
   await expect.poll(async () => (await haloApi.publicPost(ref)).status).toBe(404);
 
   const anonymous = await browser.newContext();
-  const page = await anonymous.newPage();
-  const response = await page.goto(permalink!);
-  expect(response?.status()).toBe(404);
-  await expect(page.getByText(ref.title, { exact: true })).toHaveCount(0);
-  await anonymous.close();
+  try {
+    const page = await anonymous.newPage();
+    const response = await page.goto(permalink!);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByText(ref.title, { exact: true })).toHaveCount(0);
+  } finally {
+    await anonymous.close();
+  }
 });
 
 test('E08 readonly direct create is denied once and resource remains absent', async ({ readonlyPage, roles, haloApi }) => {

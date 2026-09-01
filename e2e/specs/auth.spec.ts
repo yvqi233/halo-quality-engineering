@@ -17,13 +17,16 @@ test('E02 wrong password remains unauthenticated', async ({ page }) => {
   await expect(page).toHaveURL(/\/login(?:\?|$)/);
 });
 
-test('E03 author opens Posts and readonly is redirected from console', async ({ authorPage, readonlyPage }) => {
-  await authorPage.goto('/uc');
-  await authorPage.getByRole('listitem').filter({ hasText: /^Posts$/ }).click();
-  await expect(authorPage).toHaveURL(/\/uc\/posts(?:\/|$)/);
+test('E03 author opens Posts and readonly is redirected from console', async ({
+  canonicalAuthorPage,
+  canonicalReadonlyPage
+}) => {
+  await canonicalAuthorPage.goto('/uc');
+  await canonicalAuthorPage.getByRole('listitem').filter({ hasText: /^Posts$/ }).click();
+  await expect(canonicalAuthorPage).toHaveURL(/\/uc\/posts(?:\/|$)/);
 
-  await readonlyPage.goto('/console/posts');
-  await expect(readonlyPage).toHaveURL(/\/console\/403$/);
+  await canonicalReadonlyPage.goto('/console/posts');
+  await expect(canonicalReadonlyPage).toHaveURL(/\/console\/403$/);
 });
 
 test('E09 admin logout invalidates the former context', async ({ adminPage }) => {

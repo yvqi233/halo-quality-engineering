@@ -11,9 +11,15 @@ importers:
       '@playwright/test':
         specifier: 1.55.0
         version: 1.55.0
+      '@types/adm-zip':
+        specifier: 0.5.7
+        version: 0.5.7
       '@types/node':
         specifier: 24.3.0
         version: 24.3.0
+      adm-zip:
+        specifier: 0.5.16
+        version: 0.5.16
       typescript:
         specifier: 5.9.2
         version: 5.9.2
@@ -25,8 +31,15 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  '@types/adm-zip@0.5.7':
+    resolution: {integrity: sha512-DNEs/QvmyRLurdQPChqq0Md4zGvPwHerAJYWk9l2jCbD1VPpnzRJorOdiq4zsw09NFbYnhfsoEhWtxIzXpn2yw==}
+
   '@types/node@24.3.0':
     resolution: {integrity: sha512-aPTXCrfwnDLj4VvXrm+UUCQjNEvJgNA8s5F1cvwQU+3KNltTOkBm1j30uNLyqqPNe7gE3KFzImYoZEfLhp4Yow==}
+
+  adm-zip@0.5.16:
+    resolution: {integrity: sha512-TGw5yVi4saajsSEgz25grObGHEUaDrniwvA2qwSC060KfqGPdglhvPMA2lPIoxs3PQIItj2iag35fONcQqgUaQ==}
+    engines: {node: '>=12.0'}
 
   fsevents@2.3.2:
     resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
@@ -57,9 +70,15 @@ snapshots:
     dependencies:
       playwright: 1.55.0
 
+  '@types/adm-zip@0.5.7':
+    dependencies:
+      '@types/node': 24.3.0
+
   '@types/node@24.3.0':
     dependencies:
       undici-types: 7.10.0
+
+  adm-zip@0.5.16: {}
 
   fsevents@2.3.2:
     optional: true

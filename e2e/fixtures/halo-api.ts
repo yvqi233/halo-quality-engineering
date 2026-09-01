@@ -30,6 +30,7 @@ interface ListedPost {
 
 export class HaloApi {
   private readonly posts: PostRef[] = [];
+  private readonly uiReservations = new Set<string>();
 
   constructor(
     private readonly request: APIRequestContext,
@@ -38,6 +39,11 @@ export class HaloApi {
 
   unique(scenarioId: string, suffix = 'post'): string {
     return `${this.prefix}-${slug(scenarioId)}-${suffix}`;
+  }
+
+  reserveUiCreation(title: string): void {
+    if (!title.startsWith(this.prefix)) throw new Error('UI creation title must use the fixture scope');
+    this.uiReservations.add(title);
   }
 
   async createDraft(owner: string, scenarioId: string): Promise<PostRef> {
@@ -88,6 +94,24 @@ export class HaloApi {
 
   async cleanup(): Promise<CleanupFailure[]> {
     const failures: CleanupFailure[] = [];
+    if (this.uiReservations.size > 0) {
+      try {
+        const response = await this.request.get(`${CONSOLE_API}/posts`);
+        if (!response.ok()) {
+          failures.push({ resourceName: this.prefix, message: `UI sweep returned HTTP ${response.status()}` });
+        } else {
+          const body = (await response.json()) as { items?: ListedPost[] };
+          for (const post of listedPosts(body)) {
+            if (!post.spec || !post.metadata.name.startsWith(this.prefix)) continue;
+            if (!this.uiReservations.has(post.spec.title)) continue;
+            const ref = { name: post.metadata.name, title: post.spec.title, slug: post.spec.slug };
+            if (!this.posts.some(tracked => tracked.name === ref.name)) this.posts.push(ref);
+          }
+        }
+      } catch (error) {
+        failures.push({ resourceName: this.prefix, message: `UI sweep failed: ${errorMessage(error)}` });
+      }
+    }
     for (const post of [...this.posts].reverse()) {
       try {
         const response = await this.request.delete(
@@ -101,8 +125,13 @@ export class HaloApi {
       }
     }
     this.posts.length = 0;
+    this.uiReservations.clear();
     return failures;
   }
+}
+
+function listedPosts(body: { items?: ListedPost[] }): PostResource[] {
+  return body.items?.map(item => item.post ?? (item as PostResource)) ?? [];
 }
 
 export function draftPayload(ref: PostRef, owner: string): object {

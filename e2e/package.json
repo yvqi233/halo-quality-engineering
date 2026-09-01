@@ -7,11 +7,14 @@
   },
   "scripts": {
     "test": "playwright test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:unit": "playwright test --project=unit"
   },
   "devDependencies": {
+    "@types/adm-zip": "0.5.7",
     "@playwright/test": "1.55.0",
     "@types/node": "24.3.0",
+    "adm-zip": "0.5.16",
     "typescript": "5.9.2"
   }
 }
