@@ -305,3 +305,50 @@ Generated, ignored validation artifacts are retained at `.superpowers/runtime/ta
 ### Fix Commit
 
 Subject: `fix: harden Task 5 mutation and cleanup evidence`. The final SHA is recorded in the task handoff because a commit cannot contain its own stable SHA.
+
+## Fix Round 2
+
+### Status
+
+`COMPLETE`
+
+The round-1 teardown result was correct, but its retained `compose-after-down.txt` reference was false because the ignored file was absent. No product or test code changed, and the integration/unit suites were not rerun for this artifact-only correction.
+
+### Read-Only Compose Verification
+
+Docker was resolved only from the runtime-only installed user path through `LOCALAPPDATA`; no Docker executable, shim, or host absolute path was copied into or committed to the repository. The executed portable query was:
+
+```powershell
+$env:DOCKER_CLI=Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop\resources\bin\docker.exe'
+& $env:DOCKER_CLI compose --project-name halo-qe --env-file environment\image-lock.env --file environment\docker-compose.yml ps --all --format json
+```
+
+Captured result:
+
+```text
+exitCode=0
+entryCount=0
+stdout=<empty>
+```
+
+### Restored Artifact
+
+Created the ignored `.superpowers/runtime/task-5-fix-round-1/compose-after-down.txt` with the exact portable command, exit code, entry count, and explicit `<empty>` stdout marker.
+
+Verification command:
+
+```powershell
+$path='.superpowers\runtime\task-5-fix-round-1\compose-after-down.txt'
+Test-Path -LiteralPath $path
+$content=Get-Content -Raw -LiteralPath $path
+$content.Contains('compose --project-name halo-qe --env-file environment\image-lock.env --file environment\docker-compose.yml ps --all --format json')
+$content.Contains('Exit code: 0')
+$content.Contains('Entry count: 0')
+$content.Contains("Captured stdout:`n<empty>") -or $content.Contains("Captured stdout:`r`n<empty>")
+```
+
+Output: `True` for `Test-Path` and all four content assertions.
+
+### Commit
+
+The report update is committed separately, followed by the required empty audit marker commit with subject `test: restore Task 5 teardown audit evidence`; its final SHA is recorded in the task handoff.
