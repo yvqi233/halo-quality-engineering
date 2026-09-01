@@ -4,6 +4,7 @@ import type { Browser, BrowserContext } from '@playwright/test';
 import { LoginPage } from '../pages/login-page';
 import { registerSecret } from '../reporters/secret-registry';
 import {
+  attachedCleanupFailures,
   attachCleanupFailures,
   type CleanupFailure,
   runReverseCleanup
@@ -135,6 +136,7 @@ export async function cleanupNamedUsers(
     contexts.push(context);
   } catch (error) {
     failures.push({ operation: 'authenticate', resourceName: ADMIN_USERNAME, message: errorMessage(error) });
+    failures.push(...attachedCleanupFailures(error));
     context = await browser.newContext({ baseURL });
     contexts.push(context);
   }
@@ -179,6 +181,7 @@ async function cleanupUsers(
         resourceName: ADMIN_USERNAME,
         message: `${initial}refresh: ${errorMessage(refreshError)}`
       });
+      failures.push(...attachedCleanupFailures(refreshError));
     }
   }
 
