@@ -53,24 +53,36 @@ function parseScalar(raw, lineNumber) {
 function scalar(raw) {
   const value = raw.trim();
   if (!value) return '';
-  const startsQuote = value.startsWith('"') || value.startsWith("'");
+  const quote = value[0];
+  const startsQuote = quote === '"' || quote === "'";
   const endsQuote = value.endsWith('"') || value.endsWith("'");
-  if (startsQuote || endsQuote) {
-    const quote = value[0];
-    const matchingTerminalQuote = value.endsWith(quote)
-      && (quote !== '"' || !isEscaped(value, value.length - 1));
-    if (!matchingTerminalQuote || (quote === "'" && value.split("'").length % 2 !== 1)) {
+  if (!startsQuote) {
+    if (endsQuote) throw new Error('malformed quoted scalar');
+    return value;
+  }
+  if (!value.endsWith(quote)) throw new Error('malformed quoted scalar');
+  if (quote === '"') {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed !== 'string') throw new Error('not a string');
+      return parsed;
+    } catch {
       throw new Error('malformed quoted scalar');
     }
-    return value.slice(1, -1);
   }
-  return value;
-}
 
-function isEscaped(value, index) {
-  let slashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) slashes += 1;
-  return slashes % 2 === 1;
+  const inner = value.slice(1, -1);
+  let parsed = '';
+  for (let index = 0; index < inner.length; index += 1) {
+    if (inner[index] !== "'") {
+      parsed += inner[index];
+      continue;
+    }
+    if (inner[index + 1] !== "'") throw new Error('malformed quoted scalar');
+    parsed += "'";
+    index += 1;
+  }
+  return parsed;
 }
 
 function parseIso8601(value) {

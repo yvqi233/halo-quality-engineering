@@ -33,9 +33,9 @@ function Protect-Text {
     foreach ($secret in $localSecrets) {
         $text = $text -replace [regex]::Escape($secret), '[REDACTED]'
     }
-    $text = [regex]::Replace($text, '(?im)\bAuthorization\s*:\s*(?:Basic|Bearer)\s+[^\r\n]*', '[REDACTED]')
+    $text = [regex]::Replace($text, '(?im)(\bAuthorization\s*:\s*)(?:Basic|Bearer)\s+\S+', '$1"[REDACTED]"')
     $text = [regex]::Replace($text, '(?i)\b(Basic|Bearer)\s+\S+', '$1 [REDACTED]')
-    $text = [regex]::Replace($text, '(?im)\b(?:Set-Cookie|Cookie)\s*[:=]\s*[^\r\n]*', '[REDACTED]')
+    $text = [regex]::Replace($text, '(?im)(\b(?:Set-Cookie|Cookie)\s*:\s*)[^\s;,\r\n]+', '$1"[REDACTED]"')
     $text = [regex]::Replace(
         $text,
         '(?i)(["'']?(?:password|authorization|cookie|set-cookie|token|storagestate)["'']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^,\s}\]]+)',

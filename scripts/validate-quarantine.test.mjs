@@ -60,6 +60,14 @@ test('rejects unmatched YAML quotes and impossible calendar dates', () => {
   assert.deepEqual(validateQuarantine(validCase.replace('2026-09-15T00:00:00Z', '2028-02-29T00:00:00+09:00'), NOW), []);
 });
 
+test('rejects unescaped interior quote delimiters and accepts escaped quoted scalars', () => {
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', 'owner: "quality"engineering"'), NOW), [
+    'line 4: malformed quoted scalar'
+  ]);
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', 'owner: "quality \\"engineering\\""'), NOW), []);
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', "owner: 'quality ''engineering'''"), NOW), []);
+});
+
 test('CLI exits 2 for invalid future quarantine entries', () => {
   const directory = mkdtempSync(join(tmpdir(), 'halo-quarantine-'));
   const quarantinePath = join(directory, 'quarantine.yaml');
