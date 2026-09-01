@@ -1,4 +1,4 @@
-import type { APIRequestContext } from '@playwright/test';
+import { expect, type APIRequestContext } from '@playwright/test';
 
 const CONSOLE_API = '/apis/api.console.halo.run/v1alpha1';
 const CONTENT_API = '/apis/content.halo.run/v1alpha1';
@@ -16,9 +16,9 @@ export interface CleanupFailure {
 }
 
 interface PostResource {
-  metadata: { name: string };
+  metadata: { name: string; version?: number };
   spec?: { title: string; slug: string; publish: boolean };
-  status?: { phase?: string; permalink?: string };
+  status?: { phase?: string; permalink?: string; observedVersion?: number };
 }
 
 interface ListedPost {
@@ -114,6 +114,7 @@ export class HaloApi {
     }
     for (const post of [...this.posts].reverse()) {
       try {
+        await this.waitForSettledPost(post.name);
         const response = await this.request.delete(
           `/apis/content.halo.run/v1alpha1/posts/${encodeURIComponent(post.name)}`
         );
@@ -127,6 +128,26 @@ export class HaloApi {
     this.posts.length = 0;
     this.uiReservations.clear();
     return failures;
+  }
+
+  private async waitForSettledPost(name: string): Promise<void> {
+    let lastVersion: number | undefined;
+    let stableObservations = 0;
+    await expect.poll(async () => {
+      const state = await this.consolePost(name);
+      if (state.status === 404) return true;
+      const version = state.post?.metadata.version;
+      const observed = state.post?.status?.observedVersion;
+      if (state.status !== 200 || version === undefined || observed === undefined) return false;
+      if (version !== observed) {
+        stableObservations = 0;
+        lastVersion = version;
+        return false;
+      }
+      stableObservations = version === lastVersion ? stableObservations + 1 : 1;
+      lastVersion = version;
+      return stableObservations >= 3;
+    }, { timeout: 15_000, intervals: [100] }).toBe(true);
   }
 }
 

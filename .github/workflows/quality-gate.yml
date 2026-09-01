@@ -1,0 +1,314 @@
+name: Layered quality gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: L0 contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DOCKER_CLI: docker
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run L0 once
+        id: gate
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/quality-gate.ps1 -Layer L0 -QuarantineMode MainChain
+      - name: Start L0 evidence-upload measurement
+        id: upload-start
+        if: always()
+        shell: pwsh
+        run: "Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('startedAt=' + [DateTimeOffset]::UtcNow.ToString('O'))"
+      - name: Upload L0 JUnit XML
+        id: upload-l0-junit-xml
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l0-junit-xml
+          path: api-tests/build/test-results/test/*.xml
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L0 contract evidence
+        id: upload-l0-contract-evidence
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l0-contract-evidence
+          path: |
+            artifacts/quality-gate/L0/live-openapi.json
+            artifacts/quality-gate/L0/openapi-findings.json
+            artifacts/quality-gate/L0/counts.json
+            artifacts/quality-gate/L0/quarantine.json
+            artifacts/quality-gate/summary.jsonl
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L0 container logs
+        id: upload-l0-container-logs
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l0-container-logs
+          path: artifacts/quality-gate/L0/environment/**
+          if-no-files-found: error
+          retention-days: 14
+      - name: Summarize and enforce L0
+        if: always()
+        shell: pwsh
+        run: |
+          $testResult = '${{ steps.gate.outputs.result }}'
+          if (-not $testResult) { $testResult = 'FAIL' }
+          $duration = '${{ steps.gate.outputs.durationSeconds }}'
+          if (-not $duration) { $duration = '0' }
+          $kind = '${{ steps.gate.outputs.failureKind }}'
+          if (-not $kind) { $kind = 'TEST_TOOL' }
+          $uploads = @('${{ steps.upload-l0-junit-xml.outcome }}', '${{ steps.upload-l0-contract-evidence.outcome }}', '${{ steps.upload-l0-container-logs.outcome }}')
+          $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
+          $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
+          $started = [DateTimeOffset]::Parse('${{ steps.upload-start.outputs.startedAt }}')
+          $uploadDuration = [Math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds, 3)
+          $rows = @(
+            '| layer | result | durationSeconds | failureKind | artifactName |',
+            '|---|---|---:|---|---|',
+            "| L0 | $testResult | $duration | $kind | contract |",
+            "| L0-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | l0-junit-xml + l0-contract-evidence + l0-container-logs |"
+          ) -join "`n"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
+          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or $uploadResult -ne 'PASS') { exit 1 }
+
+  api-smoke:
+    name: L1 API smoke
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DOCKER_CLI: docker
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run L1 once
+        id: gate
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/quality-gate.ps1 -Layer L1 -QuarantineMode MainChain
+      - name: Start L1 evidence-upload measurement
+        id: upload-start
+        if: always()
+        shell: pwsh
+        run: "Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('startedAt=' + [DateTimeOffset]::UtcNow.ToString('O'))"
+      - name: Upload L1 JUnit XML
+        id: upload-l1-junit-xml
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l1-junit-xml
+          path: api-tests/build/test-results/integrationTest/*.xml
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L1 API evidence
+        id: upload-l1-api-evidence
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l1-api-evidence
+          path: api-tests/build/evidence/**
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L1 gate metadata
+        id: upload-l1-gate-metadata
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l1-gate-metadata
+          path: |
+            artifacts/quality-gate/L1/counts.json
+            artifacts/quality-gate/L1/quarantine.json
+            artifacts/quality-gate/summary.jsonl
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L1 container logs
+        id: upload-l1-container-logs
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l1-container-logs
+          path: artifacts/quality-gate/L1/environment/**
+          if-no-files-found: error
+          retention-days: 14
+      - name: Summarize and enforce L1
+        if: always()
+        shell: pwsh
+        run: |
+          $testResult = '${{ steps.gate.outputs.result }}'
+          if (-not $testResult) { $testResult = 'FAIL' }
+          $duration = '${{ steps.gate.outputs.durationSeconds }}'
+          if (-not $duration) { $duration = '0' }
+          $kind = '${{ steps.gate.outputs.failureKind }}'
+          if (-not $kind) { $kind = 'TEST_TOOL' }
+          $uploads = @('${{ steps.upload-l1-junit-xml.outcome }}', '${{ steps.upload-l1-api-evidence.outcome }}', '${{ steps.upload-l1-gate-metadata.outcome }}', '${{ steps.upload-l1-container-logs.outcome }}')
+          $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
+          $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
+          $started = [DateTimeOffset]::Parse('${{ steps.upload-start.outputs.startedAt }}')
+          $uploadDuration = [Math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds, 3)
+          $rows = @(
+            '| layer | result | durationSeconds | failureKind | artifactName |',
+            '|---|---|---:|---|---|',
+            "| L1 | $testResult | $duration | $kind | api-smoke |",
+            "| L1-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | l1-junit-xml + l1-api-evidence + l1-gate-metadata + l1-container-logs |"
+          ) -join "`n"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
+          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or $uploadResult -ne 'PASS') { exit 1 }
+
+  chromium-e2e:
+    name: L2 Chromium E2E
+    needs: api-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DOCKER_CLI: docker
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+          run_install: false
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: e2e/pnpm-lock.yaml
+      - name: Install E2E dependencies
+        run: pnpm --dir e2e install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: pnpm --dir e2e exec playwright install --with-deps chromium
+      - name: Run L2 once
+        id: gate
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/quality-gate.ps1 -Layer L2 -QuarantineMode MainChain
+      - name: Start L2 evidence-upload measurement
+        id: upload-start
+        if: always()
+        shell: pwsh
+        run: "Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('startedAt=' + [DateTimeOffset]::UtcNow.ToString('O'))"
+      - name: Upload L2 Playwright report
+        id: upload-l2-playwright-report
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-playwright-report
+          path: |
+            artifacts/quality-gate/L2/manifests/report-files.txt
+            artifacts/quality-gate/L2/**/junit.xml
+            artifacts/quality-gate/L2/**/html-report/**
+            artifacts/quality-gate/L2/**/SANITIZATION_FAILED.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L2 Playwright traces
+        id: upload-l2-playwright-traces
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-playwright-traces
+          path: |
+            artifacts/quality-gate/L2/manifests/trace-files.txt
+            artifacts/quality-gate/L2/**/trace.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L2 Playwright videos
+        id: upload-l2-playwright-videos
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-playwright-videos
+          path: |
+            artifacts/quality-gate/L2/manifests/video-files.txt
+            artifacts/quality-gate/L2/**/*.webm
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L2 gate metadata
+        id: upload-l2-gate-metadata
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-gate-metadata
+          path: |
+            artifacts/quality-gate/L2/counts.json
+            artifacts/quality-gate/L2/quarantine.json
+            artifacts/quality-gate/summary.jsonl
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload L2 container logs
+        id: upload-l2-container-logs
+        if: always()
+        continue-on-error: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-container-logs
+          path: artifacts/quality-gate/L2/*-phase/environment/**
+          if-no-files-found: error
+          retention-days: 14
+      - name: Summarize and enforce L2
+        if: always()
+        shell: pwsh
+        run: |
+          $testResult = '${{ steps.gate.outputs.result }}'
+          if (-not $testResult) { $testResult = 'FAIL' }
+          $duration = '${{ steps.gate.outputs.durationSeconds }}'
+          if (-not $duration) { $duration = '0' }
+          $kind = '${{ steps.gate.outputs.failureKind }}'
+          if (-not $kind) { $kind = 'TEST_TOOL' }
+          $uploads = @('${{ steps.upload-l2-playwright-report.outcome }}', '${{ steps.upload-l2-playwright-traces.outcome }}', '${{ steps.upload-l2-playwright-videos.outcome }}', '${{ steps.upload-l2-gate-metadata.outcome }}', '${{ steps.upload-l2-container-logs.outcome }}')
+          $uploadResult = if ($uploads -notcontains 'failure' -and $uploads -notcontains 'cancelled' -and $uploads -notcontains 'skipped') { 'PASS' } else { 'FAIL' }
+          $uploadKind = if ($uploadResult -eq 'PASS') { 'NONE' } else { 'TEST_TOOL' }
+          $started = [DateTimeOffset]::Parse('${{ steps.upload-start.outputs.startedAt }}')
+          $uploadDuration = [Math]::Round(([DateTimeOffset]::UtcNow - $started).TotalSeconds, 3)
+          $rows = @(
+            '| layer | result | durationSeconds | failureKind | artifactName |',
+            '|---|---|---:|---|---|',
+            "| L2 | $testResult | $duration | $kind | chromium-e2e |",
+            "| L2-evidence-upload | $uploadResult | $uploadDuration | $uploadKind | l2-playwright-report + l2-playwright-traces + l2-playwright-videos + l2-gate-metadata + l2-container-logs |"
+          ) -join "`n"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $rows
+          if ('${{ steps.gate.outcome }}' -ne 'success' -or $testResult -ne 'PASS' -or $uploadResult -ne 'PASS') { exit 1 }

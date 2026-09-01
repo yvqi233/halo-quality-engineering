@@ -5,7 +5,7 @@ const REQUIRED_FIELDS = ['testId', 'issueUrl', 'owner', 'reason', 'expiresAt', '
 const ISO_8601 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|([+-])(\d{2}):(\d{2}))$/;
 
 /** Parses the intentionally small quarantine.yaml schema without accepting implicit YAML features. */
-function parseQuarantine(source) {
+export function parseQuarantine(source) {
   const root = { cases: undefined };
   let current;
   let lineNumber = 0;
@@ -164,10 +164,12 @@ function runCli() {
   const args = process.argv.slice(2);
   const fileIndex = args.indexOf('--file');
   const nowIndex = args.indexOf('--now');
+  const formatIndex = args.indexOf('--format');
   const path = fileIndex >= 0 ? args[fileIndex + 1] : 'docs/quarantine.yaml';
   const now = nowIndex >= 0 ? new Date(args[nowIndex + 1]) : new Date();
-  if (!path || Number.isNaN(now.getTime())) {
-    console.error('Usage: node scripts/validate-quarantine.mjs [--file <path>] [--now <ISO-8601>]');
+  const format = formatIndex >= 0 ? args[formatIndex + 1] : undefined;
+  if (!path || Number.isNaN(now.getTime()) || (format !== undefined && format !== 'json')) {
+    console.error('Usage: node scripts/validate-quarantine.mjs [--file <path>] [--now <ISO-8601>] [--format json]');
     process.exitCode = 2;
     return;
   }
@@ -183,6 +185,8 @@ function runCli() {
   if (errors.length) {
     errors.forEach(error => console.error(`Invalid quarantine: ${error}`));
     process.exitCode = 2;
+  } else if (format === 'json') {
+    console.log(JSON.stringify(parseQuarantine(source)));
   }
 }
 

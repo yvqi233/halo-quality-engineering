@@ -4,9 +4,17 @@ import { HaloApi } from '../fixtures/halo-api';
 
 test('scoped UI sweep tracks a saved post before observation failure and deletes it', async () => {
   const calls: string[] = [];
+  let observation = 0;
   const request = {
     get: async (url: string) => {
       calls.push(`GET ${url}`);
+      if (url.startsWith('/apis/content.halo.run/v1alpha1/posts/')) {
+        observation += 1;
+        return response(200, {
+          metadata: { name: 'qe-run-0-e04-ui-post', version: 4 },
+          status: { observedVersion: observation === 1 ? 3 : 4 }
+        });
+      }
       return response(200, {
         items: [
           { post: { metadata: { name: 'qe-run-0-e04-ui-post' }, spec: {
@@ -31,6 +39,10 @@ test('scoped UI sweep tracks a saved post before observation failure and deletes
   expect(failures).toEqual([]);
   expect(calls).toEqual([
     'GET /apis/api.console.halo.run/v1alpha1/posts',
+    'GET /apis/content.halo.run/v1alpha1/posts/qe-run-0-e04-ui-post',
+    'GET /apis/content.halo.run/v1alpha1/posts/qe-run-0-e04-ui-post',
+    'GET /apis/content.halo.run/v1alpha1/posts/qe-run-0-e04-ui-post',
+    'GET /apis/content.halo.run/v1alpha1/posts/qe-run-0-e04-ui-post',
     'DELETE /apis/content.halo.run/v1alpha1/posts/qe-run-0-e04-ui-post'
   ]);
 });

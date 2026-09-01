@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { validateQuarantine } from './validate-quarantine.mjs';
+import { parseQuarantine, validateQuarantine } from './validate-quarantine.mjs';
 
 const NOW = new Date('2026-09-01T00:00:00Z');
 const repositoryRoot = resolve(import.meta.dirname, '..');
@@ -22,6 +22,29 @@ const validCase = `cases:
 test('accepts an empty quarantine and a complete unexpired case', () => {
   assert.deepEqual(validateQuarantine('cases: []\n', NOW), []);
   assert.deepEqual(validateQuarantine(validCase, NOW), []);
+  assert.equal(parseQuarantine(validCase)[0].testId, 'api.posts.lifecycle');
+});
+
+test('CLI emits validated records as JSON for gate selection', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'halo-quarantine-json-'));
+  const quarantinePath = join(directory, 'quarantine.yaml');
+  writeFileSync(quarantinePath, validCase.replace('api.posts.lifecycle', 'E10'));
+  try {
+    const run = spawnSync(process.execPath, [
+      validatorPath, '--file', quarantinePath, '--now', NOW.toISOString(), '--format', 'json'
+    ], { cwd: repositoryRoot, encoding: 'utf8' });
+    assert.equal(run.status, 0);
+    assert.deepEqual(JSON.parse(run.stdout), [{
+      testId: 'E10',
+      issueUrl: 'https://github.com/halo-dev/halo/issues/1234',
+      owner: 'quality-engineering',
+      reason: 'Intermittent upstream timeout under investigation',
+      expiresAt: '2026-09-15T00:00:00Z',
+      restoreAfterGreenRuns: '10'
+    }]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('reports each required quarantine-field, public URL, expiry, and green-run violation', () => {
