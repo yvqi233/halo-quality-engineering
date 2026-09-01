@@ -37,7 +37,7 @@ function Protect-Text {
     $text = [regex]::Replace($text, '(?i)\b(Basic|Bearer)\s+\S+', '$1 [REDACTED]')
     $text = [regex]::Replace(
         $text,
-        '(?im)(\b(?:Set-Cookie|Cookie)\s*:\s*)[^\r\n]*?(?=\s\|\|\s|$)',
+        '(?im)(\b(?:Set-Cookie|Cookie)\s*:\s*)[^\r\n]*',
         '$1"[REDACTED]"')
     $text = [regex]::Replace(
         $text,
