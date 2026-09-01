@@ -35,7 +35,10 @@ function Protect-Text {
     }
     $text = [regex]::Replace($text, '(?im)(\bAuthorization\s*:\s*)(?:Basic|Bearer)\s+\S+', '$1"[REDACTED]"')
     $text = [regex]::Replace($text, '(?i)\b(Basic|Bearer)\s+\S+', '$1 [REDACTED]')
-    $text = [regex]::Replace($text, '(?im)(\b(?:Set-Cookie|Cookie)\s*:\s*)[^\s;,\r\n]+', '$1"[REDACTED]"')
+    $text = [regex]::Replace(
+        $text,
+        '(?im)(\b(?:Set-Cookie|Cookie)\s*:\s*)[^\r\n]*?(?=\s\|\|\s|$)',
+        '$1"[REDACTED]"')
     $text = [regex]::Replace(
         $text,
         '(?i)(["'']?(?:password|authorization|cookie|set-cookie|token|storagestate)["'']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^,\s}\]]+)',
@@ -65,9 +68,6 @@ function Protect-Value {
         }
         return $copy
     }
-    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-        return @($Value | ForEach-Object { Protect-Value $_ })
-    }
     if ($Value -is [pscustomobject]) {
         $copy = [ordered]@{}
         foreach ($property in $Value.PSObject.Properties) {
@@ -78,6 +78,9 @@ function Protect-Value {
             }
         }
         return $copy
+    }
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+        return @($Value | ForEach-Object { Protect-Value $_ })
     }
     return $Value
 }
