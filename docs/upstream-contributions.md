@@ -28,7 +28,7 @@ Substantive AI assistance was disclosed in the public PR description. Human revi
 
 ## Review And Status
 
-Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN`, not draft; lifecycle: `SUBMITTED`. Public CI has no run URL for this quality repository. The upstream PR validation status is SonarCloud passed with license and CLA pending; no merged or accepted status is claimed.
+Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN`, not draft; lifecycle: `SUBMITTED`. On 2026-09-02, the public PR had 1 issue comment and 1 review, including 1 human issue comment and 0 human reviews. Public CI has no run URL for this quality repository. The upstream PR validation status is SonarCloud passed with license and CLA pending; no merged or accepted status is claimed.
 
 ## Modification History
 
@@ -40,7 +40,7 @@ Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN
 
 ## Schema
 
-The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `url`, `pageState`, `lifecycleStatus`, `haloVersion`, `sourceCommit`, and `evidence`. PR records additionally require `headCommit`. `kind` is `ISSUE` or `PR`; `pageState` is `OPEN`, `CLOSED`, `MERGED`, or `DRAFT`. The verifier checks every HTTP(S) URL in this document and README evidence links, then uses GitHub's unauthenticated public API additionally for the current state and PR head.
+The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `url`, `pageState`, `lifecycleStatus`, `haloVersion`, `sourceCommit`, and `evidence`. PR records additionally require `headCommit`. `kind` is `ISSUE` or `PR`; `pageState` is `OPEN`, `CLOSED`, `MERGED`, or `DRAFT`. The structured contribution detail records a checked-at date plus public comment/review and human-comment/review counts; the verifier validates that schema offline and compares those counts to GitHub's unauthenticated PR comment/review APIs during live verification.
 
 <!-- upstream-contribution-detail-v1 -->
 ```json
@@ -53,7 +53,14 @@ The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `
   "prChangeHead": "PR #10283 at ba1f5534ce8c5fe0e09d601ddccf0cb24a018147.",
   "validation": "SonarCloud passed; license and CLA pending.",
   "aiDisclosure": "Substantive AI assistance was disclosed in the PR description.",
-  "reviewFeedback": "No upstream human review feedback received as of 2026-09-02.",
+  "reviewFeedback": {
+    "checkedAt": "2026-09-02",
+    "issueCommentCount": 1,
+    "reviewCount": 1,
+    "humanIssueCommentCount": 1,
+    "humanReviewCount": 0,
+    "noHumanFeedback": false
+  },
   "modificationHistory": ["2026-08-31 Issue reported", "2026-08-31 PR submitted", "2026-09-02 public state verified"]
 }
 ```

@@ -17,11 +17,11 @@ function New-Fixture {
     $sha = '0123456789012345678901234567890123456789'; $digest = 'halohub/halo@sha256:0123456789012345678901234567890123456789012345678901234567890123'
     Write-Text "$root/artifacts/stability/runs.jsonl" "{`"sequence`":1,`"commit`":`"$sha`",`"haloImage`":`"$digest`",`"result`":`"PASS`",`"durationSeconds`":1,`"failureKind`":`"NONE`"}`n"
     Write-Text "$root/evidence/raw/quality-gate/summary.jsonl" "{`"layer`":`"L0`",`"result`":`"PASS`",`"durationSeconds`":1}`n{`"layer`":`"L1`",`"result`":`"PASS`",`"durationSeconds`":1}`n{`"layer`":`"L2`",`"result`":`"PASS`",`"durationSeconds`":1}`n"
-    Write-Text "$root/evidence/raw/quality-gate/L0-counts.json" '{}'; Write-Text "$root/evidence/raw/quality-gate/L1-counts.json" '{}'; Write-Text "$root/evidence/raw/quality-gate/L2-counts.json" '{"totalJourneys":1}'
-    Write-Text "$root/evidence/raw/quality-gate/L2-phases.json" '{}'
-    Write-Text "$root/evidence/raw/firefox/ordinary.xml" '<testsuites tests="11" failures="0" />'; Write-Text "$root/evidence/raw/firefox/expiry.xml" '<testsuites tests="1" failures="0" />'
-    $facts = "{`"target`":{`"haloVersion`":`"2.26.1`",`"sourceCommit`":`"88c2ef14355c79a4dbd1d5c3246b3ea32836e06b`",`"haloImage`":`"$digest`"},`"stability`":{`"testedCommit`":`"$sha`",`"consecutivePassNoneRuns`":1,`"minimumDurationSeconds`":1,`"maximumDurationSeconds`":1,`"averageDurationSeconds`":1},`"fullGate`":{`"layers`": [{`"layer`":`"L0`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L1`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L2`",`"result`":`"PASS`",`"durationSeconds`":1}],`"preflightMissingEvidence`":0,`"finalComposeRows`":0},`"firefox`":{`"ordinaryPassed`":11,`"ordinaryExpected`":11,`"isolatedExpiryPassed`":1,`"isolatedExpiryExpected`":1,`"userJourneys`":1,`"retries`":0}}"
-    $prov = '{"stabilityRecord":"artifacts/stability/runs.jsonl","gateSummary":"evidence/raw/quality-gate/summary.jsonl","gateCounts":["evidence/raw/quality-gate/L0-counts.json","evidence/raw/quality-gate/L1-counts.json","evidence/raw/quality-gate/L2-counts.json"],"gatePhases":"evidence/raw/quality-gate/L2-phases.json","firefoxOrdinaryJunit":"evidence/raw/firefox/ordinary.xml","firefoxExpiryJunit":"evidence/raw/firefox/expiry.xml"}'
+    Write-Text "$root/evidence/raw/quality-gate/L0-counts.json" '{}'; Write-Text "$root/evidence/raw/quality-gate/L1-counts.json" '{}'; Write-Text "$root/evidence/raw/quality-gate/L2-counts.json" '{"ordinaryJourneys":0,"expiryJourneys":1,"totalJourneys":1}'
+    Write-Text "$root/evidence/raw/quality-gate/L2-phases.json" '{"schemaVersion":1,"ordinary":{"environment":{"attempted":true,"completed":true,"result":"PASS"},"playwright":{"attempted":true,"completed":true,"result":"PASS"}},"expiry":{"environment":{"attempted":true,"completed":true,"result":"PASS"},"playwright":{"attempted":true,"completed":true,"result":"PASS"}}}'
+    Write-Text "$root/evidence/raw/firefox/ordinary.xml" '<testsuites tests="11" failures="0" errors="0" skipped="0" />'; Write-Text "$root/evidence/raw/firefox/expiry.xml" '<testsuites tests="1" failures="0" errors="0" skipped="0" />'
+    $facts = "{`"stability`":{`"testedCommit`":`"$sha`",`"consecutivePassNoneRuns`":1,`"minimumDurationSeconds`":1,`"maximumDurationSeconds`":1,`"averageDurationSeconds`":1},`"fullGate`":{`"layers`": [{`"layer`":`"L0`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L1`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L2`",`"result`":`"PASS`",`"durationSeconds`":1}]},`"firefox`":{`"ordinaryPassed`":11,`"ordinaryExpected`":11,`"isolatedExpiryPassed`":1,`"isolatedExpiryExpected`":1,`"userJourneys`":1}}"
+    $prov = '{"stabilityRecord":"artifacts/stability/runs.jsonl","gateSummary":"evidence/raw/quality-gate/summary.jsonl","journeyCounts":"evidence/raw/quality-gate/L2-counts.json","gatePhases":"evidence/raw/quality-gate/L2-phases.json","firefoxOrdinaryJunit":"evidence/raw/firefox/ordinary.xml","firefoxExpiryJunit":"evidence/raw/firefox/expiry.xml"}'
     Write-Text "$root/evidence/qualification-v1.json" "{`"schemaVersion`":1,`"facts`":$facts,`"provenance`":$prov}"
     $readme = @(
         '# Fixture', '', '## Measured Results', '',
@@ -30,7 +30,7 @@ function New-Fixture {
         ('{"schemaVersion":1,"evidence":"evidence/qualification-v1.json","facts":' + $facts + '}'), '```'
     ) -join "`n"
     Write-Text "$root/README.md" $readme
-    $detail = '{"schemaVersion":1,"purpose":"x","reproductionEvidence":"evidence/qualification-v1.json","expectedActual":"x","duplicateSearch":"x","prChangeHead":"x","validation":"x","aiDisclosure":"x","reviewFeedback":"x","modificationHistory":["x"]}'
+    $detail = '{"schemaVersion":1,"purpose":"x","reproductionEvidence":"evidence/qualification-v1.json","expectedActual":"x","duplicateSearch":"x","prChangeHead":"x","validation":"x","aiDisclosure":"x","reviewFeedback":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"humanIssueCommentCount":0,"humanReviewCount":0,"noHumanFeedback":true},"modificationHistory":["x"]}'
     $ledger = @(
         '# Upstream', '', '## Contribution Purpose', 'x', '## Reproduction', 'x', '## Expected And Actual', 'x',
         '## Duplicate Search', 'x', '## PR Change And Validation', 'x', '## AI Disclosure', 'x',
@@ -61,11 +61,16 @@ Invoke-Case 'claim' 'README qualification claims' { param($r) (Get-Content -Raw 
 Invoke-Case 'prose' 'documented boilerplate' { param($r) Add-Content "$r/README.md" 'the suite completed successfully after twelve runs' }
 Invoke-Case 'local link' 'README qualification evidence' { param($r) (Get-Content -Raw "$r/README.md").Replace('evidence/qualification-v1.json","facts','evidence/missing.json","facts') | Set-Content "$r/README.md" }
 Invoke-Case 'lifecycle' 'lifecycleStatus must be SUBMITTED' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace('"lifecycleStatus":"SUBMITTED"','"lifecycleStatus":"MERGED"') | Set-Content "$r/docs/upstream-contributions.md" }
+Invoke-Case 'ordinary junit failure' 'derived tracked raw artifacts' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/ordinary.xml").Replace('failures="0"','failures="1"') | Set-Content "$r/evidence/raw/firefox/ordinary.xml" }
+Invoke-Case 'ordinary junit error' 'derived tracked raw artifacts' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/ordinary.xml").Replace('errors="0"','errors="1"') | Set-Content "$r/evidence/raw/firefox/ordinary.xml" }
+Invoke-Case 'expiry junit skipped' 'derived tracked raw artifacts' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/expiry.xml").Replace('skipped="0"','skipped="1"') | Set-Content "$r/evidence/raw/firefox/expiry.xml" }
+Invoke-Case 'failed phase' 'Qualification raw gate phase' { param($r) (Get-Content -Raw "$r/evidence/raw/quality-gate/L2-phases.json").Replace('"result":"PASS"','"result":"FAIL"') | Set-Content "$r/evidence/raw/quality-gate/L2-phases.json" }
+Invoke-Case 'incomplete phase' 'Qualification raw gate phase' { param($r) (Get-Content -Raw "$r/evidence/raw/quality-gate/L2-phases.json").Replace('"completed":true','"completed":false') | Set-Content "$r/evidence/raw/quality-gate/L2-phases.json" }
 $tcp = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $tcp.Start(); $port = ([Net.IPEndPoint]$tcp.LocalEndpoint).Port; $tcp.Stop()
-$urlJob = Start-Job -ArgumentList $port -ScriptBlock { param($listenerPort) $listener=[Net.HttpListener]::new(); $listener.Prefixes.Add("http://127.0.0.1:$listenerPort/"); $listener.Start(); try { for ($index=0; $index -lt 3; $index++) { $context=$listener.GetContext(); $context.Response.StatusCode=404; $context.Response.Close() } } finally { $listener.Stop(); $listener.Close() } }
+$urlJob = Start-Job -ArgumentList $port -ScriptBlock { param($listenerPort) $listener=[Net.HttpListener]::new(); $listener.Prefixes.Add("http://127.0.0.1:$listenerPort/"); $listener.Start(); try { for ($index=0; $index -lt 2; $index++) { $context=$listener.GetContext(); $context.Response.StatusCode=404; $context.Response.Close() } } finally { $listener.Stop(); $listener.Close() } }
 try {
     Start-Sleep -Milliseconds 200
-    Invoke-Case 'public URL' 'Public URL check failed' { param($r) Add-Content "$r/docs/upstream-contributions.md" 'https://public.example.test/not-found' } @('-CheckPublicUrls', '-PublicUrlCheckBaseUri', "http://127.0.0.1:$port/")
+    Invoke-Case 'public URL' 'Public URL check failed' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace('https://github.com/halo-dev/halo/issues/1', "http://127.0.0.1:$port/issues/1").Replace('https://github.com/halo-dev/halo/pull/2', "http://127.0.0.1:$port/pull/2") | Set-Content "$r/docs/upstream-contributions.md" } @('-CheckPublicUrls')
 } finally { Stop-Job $urlJob -ErrorAction SilentlyContinue; Remove-Job $urlJob -Force -ErrorAction SilentlyContinue }
 Invoke-Case 'nested password' 'e2e/reports/x.txt contains' { param($r) Write-Text "$r/e2e/reports/x.txt" ('HaloQE!'+'2026') }
 Invoke-Case 'token' 'docs/x.txt contains a credential' { param($r) Write-Text "$r/docs/x.txt" ('ghp_'+'abcdefghijklmnopqrstuvwxyz0123456789') }
@@ -75,5 +80,6 @@ Invoke-Case 'set cookie' 'docs/x.txt contains an unredacted' { param($r) Write-T
 Invoke-Case 'quoted password' 'docs/x.txt contains an unredacted' { param($r) Write-Text "$r/docs/x.txt" 'password: "secret"' }
 Invoke-Case 'unquoted colon password' 'docs/x.txt contains an unredacted' { param($r) Write-Text "$r/docs/x.txt" 'password: secret' }
 Invoke-Case 'unquoted equals password' 'docs/x.txt contains an unredacted' { param($r) Write-Text "$r/docs/x.txt" 'password=secret' }
-Invoke-Case 'detail' 'Upstream contribution detail is miss' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace(',"reviewFeedback":"x"','') | Set-Content "$r/docs/upstream-contributions.md" }
+Invoke-Case 'detail' 'Upstream contribution detail require' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace(',"reviewFeedback":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"humanIssueCommentCount":0,"humanReviewCount":0,"noHumanFeedback":true}','') | Set-Content "$r/docs/upstream-contributions.md" }
+Invoke-Case 'feedback count' 'Upstream contribution reviewFeedback' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace(',"reviewCount":0','') | Set-Content "$r/docs/upstream-contributions.md" }
 Write-Host 'verify-publication tests passed.'
