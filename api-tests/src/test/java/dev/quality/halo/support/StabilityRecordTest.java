@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -44,5 +45,37 @@ class StabilityRecordTest {
                 .toList();
 
         assertThat(StabilityRecord.hasConsecutiveGreen(shifted, 20)).isFalse();
+    }
+
+    @Test
+    void rejectsFailureAfterTwentyGreenRuns() throws Exception {
+        var records = new ArrayList<>(
+                StabilityRecord.read(Path.of("src/test/resources/stability/twenty-green.jsonl")));
+        records.add(new StabilityRecord(
+                21,
+                "2026-09-01T00:00:21Z",
+                "04379a211124cd52f7a2d08920dd0866fe24ed55",
+                "halohub/halo@sha256:37d0de36041e7da32a1f2d4ea02aa18f2f0e2757949d59e2e2659fac734f5ab9",
+                "FAIL",
+                1.021,
+                "PRODUCT"));
+
+        assertThat(StabilityRecord.hasConsecutiveGreen(records, 20)).isFalse();
+    }
+
+    @Test
+    void rejectsTwentyOneGreenRuns() throws Exception {
+        var records = new ArrayList<>(
+                StabilityRecord.read(Path.of("src/test/resources/stability/twenty-green.jsonl")));
+        records.add(new StabilityRecord(
+                21,
+                "2026-09-01T00:00:21Z",
+                "04379a211124cd52f7a2d08920dd0866fe24ed55",
+                "halohub/halo@sha256:37d0de36041e7da32a1f2d4ea02aa18f2f0e2757949d59e2e2659fac734f5ab9",
+                "PASS",
+                1.021,
+                "NONE"));
+
+        assertThat(StabilityRecord.hasConsecutiveGreen(records, 20)).isFalse();
     }
 }

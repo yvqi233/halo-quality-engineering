@@ -3,12 +3,14 @@ param(
     [ValidateRange(1, 1000)]
     [int]$Runs = 20,
     [ValidateSet('L0', 'L1', 'L2', 'All')]
-    [string]$Layer = 'All'
+    [string]$Layer = 'All',
+    [string]$RepositoryRoot,
+    [string]$GateScriptPath
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$gateScript = Join-Path $PSScriptRoot 'quality-gate.ps1'
+$repoRoot = if ($RepositoryRoot) { [IO.Path]::GetFullPath($RepositoryRoot) } else { Split-Path -Parent $PSScriptRoot }
+$gateScript = if ($GateScriptPath) { [IO.Path]::GetFullPath($GateScriptPath) } else { Join-Path $PSScriptRoot 'quality-gate.ps1' }
 $gateSummaryPath = Join-Path $repoRoot 'artifacts/quality-gate/summary.jsonl'
 $stabilityRoot = Join-Path $repoRoot 'artifacts/stability'
 $recordPath = Join-Path $stabilityRoot 'runs.jsonl'
@@ -94,8 +96,9 @@ for ($sequence = 1; $sequence -le $Runs; $sequence++) {
         $arguments += @('-ExecutionPolicy', 'Bypass')
     }
     $arguments += @('-File', $gateScript, '-Layer', $Layer, '-QuarantineMode', 'MainChain')
-    & $hostExecutable @arguments | ForEach-Object { Write-Host $_ }
+    $gateOutput = @(& $hostExecutable @arguments)
     $gateExitCode = $LASTEXITCODE
+    $gateOutput | ForEach-Object { Write-Host $_ }
     $watch.Stop()
 
     $outcome = Get-GateResult -ExitCode $gateExitCode

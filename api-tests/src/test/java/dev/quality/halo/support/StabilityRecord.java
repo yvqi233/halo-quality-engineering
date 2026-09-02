@@ -61,22 +61,18 @@ public record StabilityRecord(
         if (requiredRuns < 1) {
             throw new IllegalArgumentException("requiredRuns must be positive");
         }
-        int consecutive = 0;
-        for (StabilityRecord record : records) {
-            if (record.result.equals("PASS") && record.failureKind.equals("NONE")
-                    && record.sequence == consecutive + 1) {
-                consecutive++;
-                if (consecutive == requiredRuns) {
-                    return true;
-                }
-            } else {
-                consecutive = record.result.equals("PASS") && record.failureKind.equals("NONE")
-                                && record.sequence == 1
-                        ? 1
-                        : 0;
+        if (records.size() != requiredRuns) {
+            return false;
+        }
+        for (int index = 0; index < records.size(); index++) {
+            StabilityRecord record = records.get(index);
+            if (!record.result.equals("PASS")
+                    || !record.failureKind.equals("NONE")
+                    || record.sequence != index + 1) {
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
     private static void validate(StabilityRecord record, int lineNumber) {
