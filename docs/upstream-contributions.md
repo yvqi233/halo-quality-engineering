@@ -28,7 +28,7 @@ Substantive AI assistance was disclosed in the public PR description. Human revi
 
 ## Review And Status
 
-Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN`, not draft; lifecycle: `SUBMITTED`. On 2026-09-02, the public PR had 1 issue comment and 1 review, including 1 human issue comment and 0 human reviews. Public CI has no run URL for this quality repository. The upstream PR validation status is SonarCloud passed with license and CLA pending; no merged or accepted status is claimed.
+Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN`, not draft; lifecycle: `SUBMITTED`. On 2026-09-02, the public PR had two status-service comments, from `CLAassistant` (`User`) and `sonarqubecloud[bot]` (`Bot`), and zero GitHub review records. These public facts do not establish whether any human reviewed the change. Public CI has no run URL for this quality repository. The upstream PR validation status is SonarCloud passed with license and CLA pending; no merged or accepted status is claimed.
 
 ## Modification History
 
@@ -40,7 +40,7 @@ Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN
 
 ## Schema
 
-The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `url`, `pageState`, `lifecycleStatus`, `haloVersion`, `sourceCommit`, and `evidence`. PR records additionally require `headCommit`. `kind` is `ISSUE` or `PR`; `pageState` is `OPEN`, `CLOSED`, `MERGED`, or `DRAFT`. The structured contribution detail records a checked-at date plus public comment/review and human-comment/review counts; the verifier validates that schema offline and compares those counts to GitHub's unauthenticated PR comment/review APIs during live verification.
+The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `url`, `pageState`, `lifecycleStatus`, `haloVersion`, `sourceCommit`, and `evidence`. PR records additionally require `headCommit`. `kind` is `ISSUE` or `PR`; `pageState` is `OPEN`, `CLOSED`, `MERGED`, or `DRAFT`. The structured contribution detail records a checked-at date, exact public comment actor/type facts, and exact review actor/type/state facts. The verifier validates that schema offline and compares it to GitHub's unauthenticated PR comment/review APIs during live verification.
 
 <!-- upstream-contribution-detail-v1 -->
 ```json
@@ -53,13 +53,15 @@ The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `
   "prChangeHead": "PR #10283 at ba1f5534ce8c5fe0e09d601ddccf0cb24a018147.",
   "validation": "SonarCloud passed; license and CLA pending.",
   "aiDisclosure": "Substantive AI assistance was disclosed in the PR description.",
-  "reviewFeedback": {
+  "publicReviewFacts": {
     "checkedAt": "2026-09-02",
-    "issueCommentCount": 1,
-    "reviewCount": 1,
-    "humanIssueCommentCount": 1,
-    "humanReviewCount": 0,
-    "noHumanFeedback": false
+    "issueCommentCount": 2,
+    "reviewCount": 0,
+    "issueComments": [
+      { "actor": "CLAassistant", "actorType": "User" },
+      { "actor": "sonarqubecloud[bot]", "actorType": "Bot" }
+    ],
+    "reviews": []
   },
   "modificationHistory": ["2026-08-31 Issue reported", "2026-08-31 PR submitted", "2026-09-02 public state verified"]
 }

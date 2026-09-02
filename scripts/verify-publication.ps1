@@ -14,6 +14,7 @@ $repoRoot = if ($RepositoryRoot) {
 }
 $errors = [Collections.Generic.List[string]]::new()
 $syntheticPassword = 'HaloQE!' + '2026'
+. (Join-Path $PSScriptRoot 'verify-publication.github.ps1')
 
 function Add-PublicationError {
     param([string]$Message)
@@ -141,17 +142,37 @@ function Test-ResultNarrative {
 }
 
 function Get-DerivedQualificationFacts {
-    param([object]$Provenance)
+    param([object]$Provenance, [hashtable]$Tracked)
 
     foreach ($field in @('stabilityRecord', 'gateSummary', 'journeyCounts', 'gatePhases', 'firefoxOrdinaryJunit', 'firefoxExpiryJunit')) {
         if (-not $Provenance.PSObject.Properties.Name.Contains($field)) { throw "Qualification provenance is missing $field." }
     }
-    $stability = @(Get-Content -LiteralPath (Join-Path $repoRoot $Provenance.stabilityRecord) | ForEach-Object { $_ | ConvertFrom-Json })
-    $gate = @(Get-Content -LiteralPath (Join-Path $repoRoot $Provenance.gateSummary) | ForEach-Object { $_ | ConvertFrom-Json })
-    $journeyCounts = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $Provenance.journeyCounts) | ConvertFrom-Json
-    $phases = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $Provenance.gatePhases) | ConvertFrom-Json
-    [xml]$ordinary = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $Provenance.firefoxOrdinaryJunit)
-    [xml]$expiry = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $Provenance.firefoxExpiryJunit)
+    $rootWithSeparator = $repoRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $paths = @{}
+    foreach ($field in @('stabilityRecord', 'gateSummary', 'journeyCounts', 'gatePhases', 'firefoxOrdinaryJunit', 'firefoxExpiryJunit')) {
+        $relative = [string]$Provenance.$field
+        if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative)) {
+            throw "Qualification provenance path is invalid or outside repository root: $relative"
+        }
+        if (@($relative -split '[\\/]' | Where-Object { $_ -eq '..' }).Count -gt 0) {
+            throw "Qualification provenance path contains traversal: $relative"
+        }
+        $full = [IO.Path]::GetFullPath((Join-Path $repoRoot $relative))
+        if (-not $full.StartsWith($rootWithSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Qualification provenance path is outside repository root: $relative"
+        }
+        $normalized = $full.Substring($rootWithSeparator.Length).Replace('\', '/')
+        if (-not $Tracked.ContainsKey($normalized)) {
+            throw "Qualification provenance path is not tracked: $relative"
+        }
+        $paths[$field] = $full
+    }
+    $stability = @(Get-Content -LiteralPath $paths.stabilityRecord | ForEach-Object { $_ | ConvertFrom-Json })
+    $gate = @(Get-Content -LiteralPath $paths.gateSummary | ForEach-Object { $_ | ConvertFrom-Json })
+    $journeyCounts = Get-Content -Raw -LiteralPath $paths.journeyCounts | ConvertFrom-Json
+    $phases = Get-Content -Raw -LiteralPath $paths.gatePhases | ConvertFrom-Json
+    [xml]$ordinary = Get-Content -Raw -LiteralPath $paths.firefoxOrdinaryJunit
+    [xml]$expiry = Get-Content -Raw -LiteralPath $paths.firefoxExpiryJunit
     $passes = @($stability | Where-Object { $_.result -eq 'PASS' -and $_.failureKind -eq 'NONE' })
     $durations = @($stability.durationSeconds)
     if ($stability.Count -eq 0 -or $passes.Count -ne $stability.Count -or @($stability | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.commit) -or [string]::IsNullOrWhiteSpace([string]$_.haloImage) }).Count -gt 0) {
@@ -188,6 +209,7 @@ function Get-DerivedQualificationFacts {
         }
         $notPassed = $counts.failures + $counts.errors + $counts.skipped
         if ($notPassed -gt $counts.tests) { throw "$Description has inconsistent outcome counts." }
+        if ($notPassed -ne 0) { throw "$Description must be completely green; failures=$($counts.failures), errors=$($counts.errors), skipped=$($counts.skipped)." }
         return [pscustomobject]@{ expected = $counts.tests; passed = $counts.tests - $notPassed }
     }
     $ordinaryOutcome = Get-JunitOutcome -Document $ordinary -Description 'Qualification raw ordinary Firefox JUnit'
@@ -291,68 +313,46 @@ function Test-ContributionNarrative {
             }
         }
         if (@($detail.modificationHistory).Count -eq 0) { Add-PublicationError 'Upstream contribution detail has empty modificationHistory.' }
-        if (-not $detail.PSObject.Properties.Name.Contains('reviewFeedback') -or $detail.reviewFeedback -isnot [psobject] -or $detail.reviewFeedback -is [string]) {
-            Add-PublicationError 'Upstream contribution detail requires structured reviewFeedback.'
+        if ($detail.PSObject.Properties.Name.Contains('reviewFeedback')) {
+            Add-PublicationError 'Upstream contribution detail must not infer human feedback from GitHub actor type; record exact publicReviewFacts instead.'
+        }
+        if (-not $detail.PSObject.Properties.Name.Contains('publicReviewFacts') -or $detail.publicReviewFacts -isnot [psobject] -or $detail.publicReviewFacts -is [string]) {
+            Add-PublicationError 'Upstream contribution detail requires structured publicReviewFacts.'
         } else {
-            $feedback = $detail.reviewFeedback
-            foreach ($field in @('checkedAt', 'issueCommentCount', 'reviewCount', 'humanIssueCommentCount', 'humanReviewCount', 'noHumanFeedback')) {
-                if (-not $feedback.PSObject.Properties.Name.Contains($field)) { Add-PublicationError "Upstream contribution reviewFeedback is missing $field." }
+            $facts = $detail.publicReviewFacts
+            foreach ($field in @('checkedAt', 'issueCommentCount', 'reviewCount', 'issueComments', 'reviews')) {
+                if (-not $facts.PSObject.Properties.Name.Contains($field)) { Add-PublicationError "Upstream contribution publicReviewFacts is missing $field." }
+            }
+            $unsupportedFields = @($facts.PSObject.Properties.Name | Where-Object { $_ -notin @('checkedAt', 'issueCommentCount', 'reviewCount', 'issueComments', 'reviews') })
+            if ($unsupportedFields.Count -gt 0) {
+                Add-PublicationError "Upstream contribution publicReviewFacts contains unsupported fields: $($unsupportedFields -join ', ')."
             }
             $checkedAt = [DateTime]::MinValue
-            if (-not [DateTime]::TryParseExact([string]$feedback.checkedAt, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$checkedAt) -or $checkedAt.Date -gt [DateTime]::UtcNow.Date) {
-                Add-PublicationError 'Upstream contribution reviewFeedback checkedAt must be a non-future ISO date.'
+            if (-not [DateTime]::TryParseExact([string]$facts.checkedAt, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$checkedAt) -or $checkedAt.Date -gt [DateTime]::UtcNow.Date) {
+                Add-PublicationError 'Upstream contribution publicReviewFacts checkedAt must be a non-future ISO date.'
             }
-            foreach ($field in @('issueCommentCount', 'reviewCount', 'humanIssueCommentCount', 'humanReviewCount')) {
+            foreach ($field in @('issueCommentCount', 'reviewCount')) {
                 $count = -1
-                if (-not [int]::TryParse([string]$feedback.$field, [ref]$count) -or $count -lt 0) { Add-PublicationError "Upstream contribution reviewFeedback $field must be a non-negative integer." }
+                if (-not [int]::TryParse([string]$facts.$field, [ref]$count) -or $count -lt 0) { Add-PublicationError "Upstream contribution publicReviewFacts $field must be a non-negative integer." }
             }
-            if ($feedback.noHumanFeedback -isnot [bool] -or [bool]$feedback.noHumanFeedback -ne (([int]$feedback.humanIssueCommentCount + [int]$feedback.humanReviewCount) -eq 0)) {
-                Add-PublicationError 'Upstream contribution reviewFeedback noHumanFeedback does not match human counts.'
+            $comments = @($facts.issueComments)
+            $reviews = @($facts.reviews)
+            if ([int]$facts.issueCommentCount -ne $comments.Count -or [int]$facts.reviewCount -ne $reviews.Count) {
+                Add-PublicationError 'Upstream contribution publicReviewFacts counts do not match the recorded fact arrays.'
+            }
+            foreach ($comment in $comments) {
+                if ([string]::IsNullOrWhiteSpace([string]$comment.actor) -or [string]::IsNullOrWhiteSpace([string]$comment.actorType)) {
+                    Add-PublicationError 'Upstream contribution publicReviewFacts issue comments require actor and actorType.'
+                }
+            }
+            foreach ($review in $reviews) {
+                if ([string]::IsNullOrWhiteSpace([string]$review.actor) -or [string]::IsNullOrWhiteSpace([string]$review.actorType) -or [string]::IsNullOrWhiteSpace([string]$review.state)) {
+                    Add-PublicationError 'Upstream contribution publicReviewFacts reviews require actor, actorType, and state.'
+                }
             }
         }
         return $detail
     } catch { Add-PublicationError $_.Exception.Message; return $null }
-}
-
-function Get-PublicGitHubCollection {
-    param([string]$Path, [string]$Description)
-
-    $items = @()
-    for ($page = 1; $page -le 100; $page++) {
-        $separator = if ($Path.Contains('?')) { '&' } else { '?' }
-        $uri = $GitHubApiBaseUri.TrimEnd('/') + $Path + $separator + "per_page=100&page=$page"
-        try {
-            $response = Invoke-WebRequest -Uri $uri -UseBasicParsing -Headers @{ 'User-Agent' = 'halo-quality-engineering-publication-verifier' }
-            if ($response.StatusCode -notin @(200, 301, 302)) { throw "HTTP $($response.StatusCode)" }
-            $pageItems = @($response.Content | ConvertFrom-Json)
-        } catch {
-            throw "Public GitHub API check failed for ${Description}: $($_.Exception.Message)"
-        }
-        $items += $pageItems
-        if ($pageItems.Count -lt 100) { return $items }
-    }
-    throw "Public GitHub API pagination exceeded 100 pages for $Description."
-}
-
-function Test-PublicPrFeedback {
-    param([object]$Record, [object]$Feedback)
-
-    $match = [regex]::Match([string]$Record.url, '^https://github\.com/halo-dev/halo/pull/(\d+)$')
-    if (-not $match.Success) { throw "Unsupported upstream PR URL: $($Record.url)" }
-    $number = $match.Groups[1].Value
-    $issueComments = @(Get-PublicGitHubCollection -Path "/repos/halo-dev/halo/issues/$number/comments" -Description "PR issue comments for $($Record.url)")
-    $reviews = @(Get-PublicGitHubCollection -Path "/repos/halo-dev/halo/pulls/$number/reviews" -Description "PR reviews for $($Record.url)")
-    $actual = [pscustomobject]@{
-        issueCommentCount = $issueComments.Count
-        reviewCount = $reviews.Count
-        humanIssueCommentCount = @($issueComments | Where-Object { $_.user.type -eq 'User' }).Count
-        humanReviewCount = @($reviews | Where-Object { $_.user.type -eq 'User' }).Count
-    }
-    foreach ($field in @('issueCommentCount', 'reviewCount', 'humanIssueCommentCount', 'humanReviewCount')) {
-        if ([int]$Feedback.$field -ne [int]$actual.$field) { Add-PublicationError "Public PR feedback mismatch for $($Record.url): $field ledger=$($Feedback.$field), live=$($actual.$field)." }
-    }
-    $liveNoHumanFeedback = ($actual.humanIssueCommentCount + $actual.humanReviewCount) -eq 0
-    if ([bool]$Feedback.noHumanFeedback -ne $liveNoHumanFeedback) { Add-PublicationError "Public PR feedback noHumanFeedback mismatch for $($Record.url)." }
 }
 
 function Get-GitHubRecordState {
@@ -436,7 +436,7 @@ if (-not $tracked.ContainsKey('README.md')) {
                 if ($evidence.schemaVersion -ne 1) { Add-PublicationError 'Qualification evidence must use schemaVersion 1.' }
                 Test-QualificationFacts -Facts $evidence.facts -Description 'Qualification evidence'
                 Test-QualificationFacts -Facts $claims.facts -Description 'README qualification claims'
-                $derivedFacts = Get-DerivedQualificationFacts -Provenance $evidence.provenance
+                $derivedFacts = Get-DerivedQualificationFacts -Provenance $evidence.provenance -Tracked $tracked
                 if (($evidence.facts | ConvertTo-Json -Depth 8 -Compress) -ne ($derivedFacts | ConvertTo-Json -Depth 8 -Compress)) {
                     Add-PublicationError "Qualification evidence facts do not exactly match derived tracked raw artifacts. expected=$($evidence.facts | ConvertTo-Json -Depth 8 -Compress) actual=$($derivedFacts | ConvertTo-Json -Depth 8 -Compress)"
                 }
@@ -479,8 +479,8 @@ if (-not $tracked.ContainsKey($ledgerRelativePath)) {
                     if ($record.kind -eq 'PR' -and [string]$live.body.head.sha -ne [string]$record.headCommit) {
                         Add-PublicationError "Public PR head commit mismatch for $($record.url)."
                     }
-                    if ($record.kind -eq 'PR' -and $null -ne $contributionDetail -and $null -ne $contributionDetail.reviewFeedback) {
-                        Test-PublicPrFeedback -Record $record -Feedback $contributionDetail.reviewFeedback
+                    if ($record.kind -eq 'PR' -and $null -ne $contributionDetail -and $null -ne $contributionDetail.publicReviewFacts) {
+                        Test-PublicPrFacts -Record $record -Facts $contributionDetail.publicReviewFacts -ApiBaseUri $GitHubApiBaseUri
                     }
                 } catch {
                     Add-PublicationError $_.Exception.Message

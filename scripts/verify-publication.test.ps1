@@ -1,8 +1,12 @@
 [CmdletBinding()]
-param()
+param(
+    [ValidateSet('', 'partial-junit', 'untracked-provenance', 'root-array', 'unsupported-human-inference')]
+    [string]$Regression = ''
+)
 
 $ErrorActionPreference = 'Stop'
 $verifier = Join-Path $PSScriptRoot 'verify-publication.ps1'
+$githubHelper = Join-Path $PSScriptRoot 'verify-publication.github.ps1'
 
 function Assert-True { param([bool]$Value, [string]$Message) if (-not $Value) { throw $Message } }
 function Write-Text { param([string]$Path, [string]$Text) New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null; [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false)) }
@@ -30,7 +34,7 @@ function New-Fixture {
         ('{"schemaVersion":1,"evidence":"evidence/qualification-v1.json","facts":' + $facts + '}'), '```'
     ) -join "`n"
     Write-Text "$root/README.md" $readme
-    $detail = '{"schemaVersion":1,"purpose":"x","reproductionEvidence":"evidence/qualification-v1.json","expectedActual":"x","duplicateSearch":"x","prChangeHead":"x","validation":"x","aiDisclosure":"x","reviewFeedback":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"humanIssueCommentCount":0,"humanReviewCount":0,"noHumanFeedback":true},"modificationHistory":["x"]}'
+    $detail = '{"schemaVersion":1,"purpose":"x","reproductionEvidence":"evidence/qualification-v1.json","expectedActual":"x","duplicateSearch":"x","prChangeHead":"x","validation":"x","aiDisclosure":"x","publicReviewFacts":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"issueComments":[],"reviews":[]},"modificationHistory":["x"]}'
     $ledger = @(
         '# Upstream', '', '## Contribution Purpose', 'x', '## Reproduction', 'x', '## Expected And Actual', 'x',
         '## Duplicate Search', 'x', '## PR Change And Validation', 'x', '## AI Disclosure', 'x',
@@ -50,8 +54,123 @@ function Invoke-Verifier { param([string]$Root,[string[]]$AdditionalVerifierArgu
     return [pscustomobject]@{ exitCode = $exitCode; output = $output }
 }
 function Invoke-Case { param([string]$Name,[string]$Expected,[scriptblock]$Mutate,[string[]]$AdditionalVerifierArguments = @())
-    $root=New-Fixture; try { & $Mutate $root; & git -C $root add .; $result=Invoke-Verifier -Root $root -AdditionalVerifierArguments $AdditionalVerifierArguments; Assert-True ($result.exitCode -ne 0) "$Name unexpectedly passed"; Assert-True (($result.output -join "`n") -match [regex]::Escape($Expected)) "$Name missing diagnostic $Expected" } finally { Remove-Item $root -Recurse -Force }
+    $root=New-Fixture; try { & $Mutate $root; & git -C $root add .; $result=Invoke-Verifier -Root $root -AdditionalVerifierArguments $AdditionalVerifierArguments; Assert-True ($result.exitCode -ne 0) "$Name unexpectedly passed"; Assert-True (($result.output -join "`n") -match [regex]::Escape($Expected)) "$Name missing diagnostic $Expected; output=$($result.output -join ' | ')" } finally { Remove-Item $root -Recurse -Force }
 }
+
+function Test-PartialJunitRegression {
+    Invoke-Case 'partial junit with matching claims' 'Qualification raw ordinary Firefox JUnit must be completely green' {
+        param($r)
+        (Get-Content -Raw "$r/evidence/raw/firefox/ordinary.xml").Replace('failures="0"','failures="1"') | Set-Content "$r/evidence/raw/firefox/ordinary.xml"
+        (Get-Content -Raw "$r/evidence/qualification-v1.json").Replace('"ordinaryPassed":11','"ordinaryPassed":10') | Set-Content "$r/evidence/qualification-v1.json"
+        (Get-Content -Raw "$r/README.md").Replace('"ordinaryPassed":11','"ordinaryPassed":10') | Set-Content "$r/README.md"
+    }
+}
+
+function Test-UntrackedProvenanceRegression {
+    $root=New-Fixture
+    try {
+        & git -C $root rm --cached --quiet evidence/raw/firefox/ordinary.xml
+        $result=Invoke-Verifier -Root $root
+        Assert-True ($result.exitCode -ne 0) 'untracked provenance unexpectedly passed'
+        Assert-True (($result.output -join "`n") -match [regex]::Escape('Qualification provenance path is not tracked')) 'untracked provenance missing its own diagnostic'
+    } finally { Remove-Item $root -Recurse -Force }
+}
+
+function Test-ProvenancePathRegressions {
+    Invoke-Case 'traversing provenance' 'Qualification provenance path contains traversal' {
+        param($r)
+        (Get-Content -Raw "$r/evidence/qualification-v1.json").Replace('evidence/raw/firefox/ordinary.xml','evidence/raw/firefox/../firefox/ordinary.xml') | Set-Content "$r/evidence/qualification-v1.json"
+    }
+    Invoke-Case 'outside provenance' 'Qualification provenance path is invalid or outside repository root' {
+        param($r)
+        (Get-Content -Raw "$r/evidence/qualification-v1.json").Replace('evidence/raw/firefox/ordinary.xml','C:/outside.xml') | Set-Content "$r/evidence/qualification-v1.json"
+    }
+}
+
+function Test-RootArrayRegression {
+    $root=New-Fixture
+    $tcp = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $tcp.Start(); $port = ([Net.IPEndPoint]$tcp.LocalEndpoint).Port; $tcp.Stop()
+    $apiJob = Start-Job -ArgumentList $port -ScriptBlock {
+        param($listenerPort)
+        $listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $listenerPort); $listener.Start()
+        try {
+            $requestCount=0; $deadline=[DateTime]::UtcNow.AddSeconds(20)
+            while ($requestCount -lt 4 -and [DateTime]::UtcNow -lt $deadline) {
+                if (-not $listener.Pending()) { Start-Sleep -Milliseconds 20; continue }
+                $client=$listener.AcceptTcpClient(); $stream=$client.GetStream()
+                $reader=[IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+                $requestLine=$reader.ReadLine(); while ($reader.ReadLine()) {}
+                $path=($requestLine -split ' ')[1].Split('?')[0]
+                $body = switch ($path) {
+                    '/repos/halo-dev/halo/issues/10283/comments' { '[{"user":{"login":"CLAassistant","type":"User"}},{"user":{"login":"sonarqubecloud[bot]","type":"Bot"}}]' }
+                    '/repos/halo-dev/halo/pulls/10283/reviews' { '[]' }
+                    default { '{"message":"not found"}' }
+                }
+                $bytes=[Text.Encoding]::UTF8.GetBytes($body)
+                $header=[Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($bytes.Length)`r`nConnection: close`r`n`r`n")
+                $stream.Write($header,0,$header.Length); $stream.Write($bytes,0,$bytes.Length); $stream.Flush(); $client.Close()
+                $requestCount++
+            }
+            if ($requestCount -ne 4) { throw "Fake GitHub API received $requestCount of 4 expected requests." }
+        } finally { $listener.Stop() }
+    }
+    try {
+        $runner = @'
+param([string]$HelperPath, [string]$ApiBaseUri)
+$ErrorActionPreference = 'Stop'
+. $HelperPath
+$record = [pscustomobject]@{ url = 'https://github.com/halo-dev/halo/pull/10283' }
+$facts = '{"issueCommentCount":2,"reviewCount":0,"issueComments":[{"actor":"CLAassistant","actorType":"User"},{"actor":"sonarqubecloud[bot]","actorType":"Bot"}],"reviews":[]}' | ConvertFrom-Json
+Test-PublicPrFacts -Record $record -Facts $facts -ApiBaseUri $ApiBaseUri
+$facts.issueComments[0].actor = 'different-status-service'
+try {
+    Test-PublicPrFacts -Record $record -Facts $facts -ApiBaseUri $ApiBaseUri
+    throw 'fake GitHub actor/type mismatch unexpectedly passed'
+} catch {
+    if ($_.Exception.Message -notmatch 'issue comment actor/type facts differ') { throw }
+}
+Write-Host 'fake GitHub collection and fact comparison passed.'
+'@
+        $runnerPath=Join-Path $root 'github-helper-regression.ps1'; Write-Text $runnerPath $runner
+        Start-Sleep -Milliseconds 1000
+        $arguments=@('-NoProfile','-ExecutionPolicy','Bypass','-File',$runnerPath,'-HelperPath',$githubHelper,'-ApiBaseUri',"http://127.0.0.1:$port")
+        $stdout=Join-Path $root 'github-helper.stdout.txt'; $stderr=Join-Path $root 'github-helper.stderr.txt'
+        $child=Start-Process -FilePath powershell.exe -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if (-not $child.WaitForExit(15000)) {
+            $child.Kill()
+            throw 'fake GitHub helper child exceeded its 15-second deadline'
+        }
+        $child.WaitForExit(); $child.Refresh(); $exitCode=[int]$child.ExitCode
+        $output=@(Get-Content $stdout -ErrorAction SilentlyContinue) + @(Get-Content $stderr -ErrorAction SilentlyContinue)
+        Assert-True ($exitCode -eq 0) "fake GitHub root arrays were not normalized as 2 comments and 0 reviews (exit=$exitCode): $($output -join ' | ')"
+        [void](Wait-Job $apiJob -Timeout 5)
+        Assert-True ($apiJob.State -eq 'Completed') "fake GitHub API job did not complete: $($apiJob.State)"
+        Receive-Job $apiJob -ErrorAction Stop | Out-Null
+    } finally {
+        Stop-Job $apiJob -ErrorAction SilentlyContinue
+        Remove-Job $apiJob -Force -ErrorAction SilentlyContinue
+        Remove-Item $root -Recurse -Force
+    }
+}
+
+function Test-UnsupportedHumanInferenceRegression {
+    Invoke-Case 'unsupported human inference' 'infer human feedback from GitHub actor type' {
+        param($r)
+        (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace('"publicReviewFacts":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"issueComments":[],"reviews":[]}', '"reviewFeedback":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"humanIssueCommentCount":0,"humanReviewCount":0,"noHumanFeedback":true}') | Set-Content "$r/docs/upstream-contributions.md"
+    }
+}
+
+if ($Regression) {
+    switch ($Regression) {
+        'partial-junit' { Test-PartialJunitRegression }
+        'untracked-provenance' { Test-UntrackedProvenanceRegression }
+        'root-array' { Test-RootArrayRegression }
+        'unsupported-human-inference' { Test-UnsupportedHumanInferenceRegression }
+    }
+    Write-Host "verify-publication regression passed: $Regression"
+    exit 0
+}
+
 Assert-True (Test-Path $verifier) 'verifier missing'
 $root=New-Fixture; try { $result=Invoke-Verifier -Root $root; Assert-True ($result.exitCode -eq 0) 'valid fixture failed'; Write-Text "$root/api-tests/bin/leak.txt" ('ghp_'+'abcdefghijklmnopqrstuvwxyz0123456789'); $result=Invoke-Verifier -Root $root; Assert-True ($result.exitCode -eq 0) 'untracked bin contaminated verifier' } finally { Remove-Item $root -Recurse -Force }
 Invoke-Case 'ipv4' 'disallowed IPv4' { param($r) Write-Text "$r/docs/x.md" ('10.' + '20.30.40') }
@@ -61,9 +180,9 @@ Invoke-Case 'claim' 'README qualification claims' { param($r) (Get-Content -Raw 
 Invoke-Case 'prose' 'documented boilerplate' { param($r) Add-Content "$r/README.md" 'the suite completed successfully after twelve runs' }
 Invoke-Case 'local link' 'README qualification evidence' { param($r) (Get-Content -Raw "$r/README.md").Replace('evidence/qualification-v1.json","facts','evidence/missing.json","facts') | Set-Content "$r/README.md" }
 Invoke-Case 'lifecycle' 'lifecycleStatus must be SUBMITTED' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace('"lifecycleStatus":"SUBMITTED"','"lifecycleStatus":"MERGED"') | Set-Content "$r/docs/upstream-contributions.md" }
-Invoke-Case 'ordinary junit failure' 'derived tracked raw artifacts' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/ordinary.xml").Replace('failures="0"','failures="1"') | Set-Content "$r/evidence/raw/firefox/ordinary.xml" }
-Invoke-Case 'ordinary junit error' 'derived tracked raw artifacts' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/ordinary.xml").Replace('errors="0"','errors="1"') | Set-Content "$r/evidence/raw/firefox/ordinary.xml" }
-Invoke-Case 'expiry junit skipped' 'derived tracked raw artifacts' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/expiry.xml").Replace('skipped="0"','skipped="1"') | Set-Content "$r/evidence/raw/firefox/expiry.xml" }
+Invoke-Case 'ordinary junit failure' 'Firefox JUnit must be completely green' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/ordinary.xml").Replace('failures="0"','failures="1"') | Set-Content "$r/evidence/raw/firefox/ordinary.xml" }
+Invoke-Case 'ordinary junit error' 'Firefox JUnit must be completely green' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/ordinary.xml").Replace('errors="0"','errors="1"') | Set-Content "$r/evidence/raw/firefox/ordinary.xml" }
+Invoke-Case 'expiry junit skipped' 'Firefox JUnit must be completely green' { param($r) (Get-Content -Raw "$r/evidence/raw/firefox/expiry.xml").Replace('skipped="0"','skipped="1"') | Set-Content "$r/evidence/raw/firefox/expiry.xml" }
 Invoke-Case 'failed phase' 'Qualification raw gate phase' { param($r) (Get-Content -Raw "$r/evidence/raw/quality-gate/L2-phases.json").Replace('"result":"PASS"','"result":"FAIL"') | Set-Content "$r/evidence/raw/quality-gate/L2-phases.json" }
 Invoke-Case 'incomplete phase' 'Qualification raw gate phase' { param($r) (Get-Content -Raw "$r/evidence/raw/quality-gate/L2-phases.json").Replace('"completed":true','"completed":false') | Set-Content "$r/evidence/raw/quality-gate/L2-phases.json" }
 $tcp = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $tcp.Start(); $port = ([Net.IPEndPoint]$tcp.LocalEndpoint).Port; $tcp.Stop()
@@ -80,6 +199,11 @@ Invoke-Case 'set cookie' 'docs/x.txt contains an unredacted' { param($r) Write-T
 Invoke-Case 'quoted password' 'docs/x.txt contains an unredacted' { param($r) Write-Text "$r/docs/x.txt" 'password: "secret"' }
 Invoke-Case 'unquoted colon password' 'docs/x.txt contains an unredacted' { param($r) Write-Text "$r/docs/x.txt" 'password: secret' }
 Invoke-Case 'unquoted equals password' 'docs/x.txt contains an unredacted' { param($r) Write-Text "$r/docs/x.txt" 'password=secret' }
-Invoke-Case 'detail' 'Upstream contribution detail require' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace(',"reviewFeedback":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"humanIssueCommentCount":0,"humanReviewCount":0,"noHumanFeedback":true}','') | Set-Content "$r/docs/upstream-contributions.md" }
-Invoke-Case 'feedback count' 'Upstream contribution reviewFeedback' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace(',"reviewCount":0','') | Set-Content "$r/docs/upstream-contributions.md" }
+Invoke-Case 'detail' 'Upstream contribution detail require' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace(',"publicReviewFacts":{"checkedAt":"2026-09-02","issueCommentCount":0,"reviewCount":0,"issueComments":[],"reviews":[]}','') | Set-Content "$r/docs/upstream-contributions.md" }
+Invoke-Case 'feedback count' 'is missing reviewCount' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace(',"reviewCount":0','') | Set-Content "$r/docs/upstream-contributions.md" }
+Test-PartialJunitRegression
+Test-UntrackedProvenanceRegression
+Test-ProvenancePathRegressions
+Test-RootArrayRegression
+Test-UnsupportedHumanInferenceRegression
 Write-Host 'verify-publication tests passed.'
