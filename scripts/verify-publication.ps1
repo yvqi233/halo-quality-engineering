@@ -2,7 +2,9 @@
 param(
     [string]$RepositoryRoot,
     [string]$GitHubApiBaseUri = 'https://api.github.com',
-    [switch]$SkipLiveChecks
+    [switch]$SkipLiveChecks,
+    [switch]$CheckPublicUrls,
+    [string]$PublicUrlCheckBaseUri
 )
 
 $ErrorActionPreference = 'Stop'
@@ -230,7 +232,8 @@ function Test-PublicUrl {
     param([string]$Url)
 
     try {
-        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -MaximumRedirection 5 -Headers @{ 'User-Agent' = 'halo-quality-engineering-publication-verifier' }
+        $requestUri = if ($PublicUrlCheckBaseUri) { $PublicUrlCheckBaseUri } else { $Url }
+        $response = Invoke-WebRequest -Uri $requestUri -UseBasicParsing -MaximumRedirection 5 -Headers @{ 'User-Agent' = 'halo-quality-engineering-publication-verifier' }
     } catch {
         Add-PublicationError "Public URL check failed for ${Url}: $($_.Exception.Message)"
         return
@@ -389,7 +392,7 @@ if (-not $tracked.ContainsKey($ledgerRelativePath)) {
                 }
             }
         }
-        if (-not $SkipLiveChecks) {
+        if (-not $SkipLiveChecks -or $CheckPublicUrls) {
             foreach ($url in @(Get-PublicationUrls -Text $ledgerText) + @(Get-PublicationUrls -Text $readme)) {
                 Test-PublicUrl -Url $url
             }
