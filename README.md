@@ -20,8 +20,7 @@ The qualified target is Halo `v2.26.1` at source commit `88c2ef14355c79a4dbd1d5c
 Start and initialize a disposable environment:
 
 ```powershell
-pwsh ./scripts/environment.ps1 -Action Up
-pwsh ./scripts/environment.ps1 -Action Initialize
+pwsh ./scripts/start-environment.ps1
 ```
 
 Run one gate layer, or all merge-gate layers:
