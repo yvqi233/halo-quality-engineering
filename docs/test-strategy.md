@@ -46,3 +46,7 @@ Mutations are sent once. Asynchronous state is observed only through GET request
 Evidence redacts authorization, cookies, response cookies, passwords, tokens, and storage state. Generated credentials and session cookies stay in memory and are never committed.
 
 The disposable environment raises Halo's IP-based authentication rate-limiter period capacity to 100 so the declared matrix and its required same-environment repeat can establish independent principals deterministically. The pinned one-minute refresh period and zero-duration timeout remain unchanged. Authentication rate-limit and brute-force-control validation are non-goals; A02 still exercises an actual wrong password and A03 still exercises a request without authentication, with both requiring exact HTTP 401 responses.
+
+## Publication Boundary
+
+The API ledger is the authoritative 28-scenario map for public documentation. Result claims cite tracked, redacted qualification evidence rather than design targets. The browser complement is exactly `E01-E10`, with `E10` run in an isolated short-session environment and merge-gate retries fixed at zero.
