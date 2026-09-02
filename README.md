@@ -61,12 +61,14 @@ The machine-checked claim below is compared exactly with the authoritative track
   "evidence": "evidence/qualification-v1.json",
   "facts": {
     "target": { "haloVersion": "2.26.1", "sourceCommit": "88c2ef14355c79a4dbd1d5c3246b3ea32836e06b", "haloImage": "halohub/halo@sha256:37d0de36041e7da32a1f2d4ea02aa18f2f0e2757949d59e2e2659fac734f5ab9" },
-    "stability": { "testedCommit": "04379a211124cd52f7a2d08920dd0866fe24ed55", "consecutivePassNoneRuns": 20, "minimumDurationSeconds": 163.370, "maximumDurationSeconds": 182.204, "averageDurationSeconds": 168.103 },
-    "fullGate": { "layers": [{ "layer": "L0", "result": "PASS", "durationSeconds": 41.640 }, { "layer": "L1", "result": "PASS", "durationSeconds": 65.072 }, { "layer": "L2", "result": "PASS", "durationSeconds": 77.769 }], "preflightMissingEvidence": 0, "finalComposeRows": 0 },
+    "stability": { "testedCommit": "04379a211124cd52f7a2d08920dd0866fe24ed55", "consecutivePassNoneRuns": 20, "minimumDurationSeconds": 163.37, "maximumDurationSeconds": 182.204, "averageDurationSeconds": 168.103 },
+    "fullGate": { "layers": [{ "layer": "L0", "result": "PASS", "durationSeconds": 30.559 }, { "layer": "L1", "result": "PASS", "durationSeconds": 59.442 }, { "layer": "L2", "result": "PASS", "durationSeconds": 73.93 }], "preflightMissingEvidence": 0, "finalComposeRows": 0 },
     "firefox": { "ordinaryPassed": 11, "ordinaryExpected": 11, "isolatedExpiryPassed": 1, "isolatedExpiryExpected": 1, "userJourneys": 10, "retries": 0 }
   }
 }
 ```
+
+## Qualification Boundary
 
 These are observed local qualification results, not design targets. No public CI run URL exists, and this quality repository has no remote; this repository does not claim hosted CI execution.
 

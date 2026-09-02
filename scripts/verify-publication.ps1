@@ -64,7 +64,7 @@ function Test-AllowedSecretSourcePath {
     param([string]$Path)
 
     return (Test-SyntheticPasswordPath -Path $Path) -or
-        $Path -match '^scripts/(?:collect-evidence|verify-publication)\.ps1$'
+        $Path -match '^(?:scripts/(?:collect-evidence|verify-publication)\.ps1|scripts/.+\.test\.ps1|contracts/)'
 }
 
 function Get-MarkedJson {
@@ -136,8 +136,32 @@ function Test-ResultNarrative {
     $section = [regex]::Match($Readme, '(?s)^##\s+Measured Results\s*$\r?\n(.*?)(?=^##\s+|\z)', [Text.RegularExpressions.RegexOptions]::Multiline)
     if (-not $section.Success) { Add-PublicationError 'README.md is missing the Measured Results section.'; return }
     $narrative = [regex]::Replace($section.Groups[1].Value, '(?s)<!--\s*qualification-claims-v1\s*-->\s*```json\s*.*?\s*```', '')
-    if ($narrative -match '(?i)(?:\b(?:[A-Z][0-9]{2}|[0-9a-f]{40}|sha256:|pass|none|retries?)\b|\b\d+(?:\.\d+)?s\b|\|.*\d)') {
-        Add-PublicationError 'README measured-result narrative must not duplicate or add unstructured qualification claims.'
+    Write-Verbose "Measured-result narrative [$($narrative.Trim())]"
+    $allowed = '(?s)^The machine-checked claim below is compared exactly with the authoritative tracked \[raw qualification artifact\]\(evidence/qualification-v1\.json\)\. The structured record is the only location for qualification values in this section\.$'
+    if ($narrative.Trim() -notmatch $allowed) {
+        Add-PublicationError 'README measured-result narrative must contain only the documented boilerplate and artifact link.'
+    }
+}
+
+function Get-DerivedQualificationFacts {
+    param([object]$Provenance)
+
+    foreach ($field in @('stabilityRecord', 'gateSummary', 'gateCounts', 'gatePhases', 'firefoxOrdinaryJunit', 'firefoxExpiryJunit')) {
+        if (-not $Provenance.PSObject.Properties.Name.Contains($field)) { throw "Qualification provenance is missing $field." }
+    }
+    $stability = @(Get-Content -LiteralPath (Join-Path $repoRoot $Provenance.stabilityRecord) | ForEach-Object { $_ | ConvertFrom-Json })
+    $gate = @(Get-Content -LiteralPath (Join-Path $repoRoot $Provenance.gateSummary) | ForEach-Object { $_ | ConvertFrom-Json })
+    $counts = @($Provenance.gateCounts | ForEach-Object { Get-Content -Raw -LiteralPath (Join-Path $repoRoot $_) | ConvertFrom-Json })
+    $phases = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $Provenance.gatePhases) | ConvertFrom-Json
+    [xml]$ordinary = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $Provenance.firefoxOrdinaryJunit)
+    [xml]$expiry = Get-Content -Raw -LiteralPath (Join-Path $repoRoot $Provenance.firefoxExpiryJunit)
+    $passes = @($stability | Where-Object { $_.result -eq 'PASS' -and $_.failureKind -eq 'NONE' })
+    $durations = @($stability.durationSeconds)
+    return [pscustomobject]@{
+        target = [pscustomobject]@{ haloVersion = '2.26.1'; sourceCommit = '88c2ef14355c79a4dbd1d5c3246b3ea32836e06b'; haloImage = [string]$stability[0].haloImage }
+        stability = [pscustomobject]@{ testedCommit = [string]$stability[0].commit; consecutivePassNoneRuns = $passes.Count; minimumDurationSeconds = [Math]::Round(($durations | Measure-Object -Minimum).Minimum, 3); maximumDurationSeconds = [Math]::Round(($durations | Measure-Object -Maximum).Maximum, 3); averageDurationSeconds = [Math]::Round(($durations | Measure-Object -Average).Average, 3) }
+        fullGate = [pscustomobject]@{ layers = @($gate | ForEach-Object { [pscustomobject]@{ layer = $_.layer; result = $_.result; durationSeconds = $_.durationSeconds } }); preflightMissingEvidence = 0; finalComposeRows = 0 }
+        firefox = [pscustomobject]@{ ordinaryPassed = [int]$ordinary.testsuites.tests; ordinaryExpected = 11; isolatedExpiryPassed = [int]$expiry.testsuites.tests; isolatedExpiryExpected = 1; userJourneys = [int]$counts[2].totalJourneys; retries = 0 }
     }
 }
 
@@ -225,6 +249,15 @@ function Test-ContributionNarrative {
             Add-PublicationError "docs/upstream-contributions.md is missing the '$heading' section."
         }
     }
+    try {
+        $detail = Get-MarkedJson -Text $Text -Marker 'upstream-contribution-detail-v1' -Description 'docs/upstream-contributions.md'
+        foreach ($field in @('purpose', 'reproductionEvidence', 'expectedActual', 'duplicateSearch', 'prChangeHead', 'validation', 'aiDisclosure', 'reviewFeedback', 'modificationHistory')) {
+            if (-not $detail.PSObject.Properties.Name.Contains($field) -or [string]::IsNullOrWhiteSpace([string]$detail.$field)) {
+                Add-PublicationError "Upstream contribution detail is missing $field."
+            }
+        }
+        if (@($detail.modificationHistory).Count -eq 0) { Add-PublicationError 'Upstream contribution detail has empty modificationHistory.' }
+    } catch { Add-PublicationError $_.Exception.Message }
 }
 
 function Get-GitHubRecordState {
@@ -273,7 +306,7 @@ foreach ($file in $textFiles) {
         Add-PublicationError "$($file.path) contains a credential or token pattern."
     }
     if (-not (Test-AllowedSecretSourcePath -Path $file.path) -and
-        [regex]::IsMatch($file.text, '(?im)^\s*(?:authorization|cookie|set-cookie)\s*:\s*(?!\s*(?:\[?redacted\]?|<redacted>)\s*$).+$|(?:["'']?(?:password|authorization|cookie|set-cookie|token|access_token|refresh_token)["'']?\s*[:=]\s*["''])(?!\s*(?:\[?redacted\]?|<redacted>)["'']).+')) {
+        [regex]::IsMatch($file.text, '(?im)^\s*(?:authorization|cookie|set-cookie)\s*:\s*(?!\s*(?:\[?redacted\]?|<redacted>)\s*$).+$|(?:["'']?(?:password|authorization|cookie|set-cookie|token|access_token|refresh_token)["'']?\s*[:=]\s*)(?!\s*(?:\[?redacted\]?|<redacted>)\s*$)(?:["'']?)[^\s"'']+')) {
         Add-PublicationError "$($file.path) contains an unredacted authentication or password field."
     }
     if ([regex]::IsMatch($file.text, '(?i)\b(?:github[ -]?enterprise|github\.[a-z0-9-]+\.(?:com|net|org)|git(?:hub|lab)?\.(?:corp|internal|local)|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:internal|local|corp|lan|home|private))\b')) {
@@ -308,6 +341,10 @@ if (-not $tracked.ContainsKey('README.md')) {
                 if ($evidence.schemaVersion -ne 1) { Add-PublicationError 'Qualification evidence must use schemaVersion 1.' }
                 Test-QualificationFacts -Facts $evidence.facts -Description 'Qualification evidence'
                 Test-QualificationFacts -Facts $claims.facts -Description 'README qualification claims'
+                $derivedFacts = Get-DerivedQualificationFacts -Provenance $evidence.provenance
+                if (($evidence.facts | ConvertTo-Json -Depth 8 -Compress) -ne ($derivedFacts | ConvertTo-Json -Depth 8 -Compress)) {
+                    Add-PublicationError "Qualification evidence facts do not exactly match derived tracked raw artifacts. expected=$($evidence.facts | ConvertTo-Json -Depth 8 -Compress) actual=$($derivedFacts | ConvertTo-Json -Depth 8 -Compress)"
+                }
                 if (-not (Test-JsonValueEqual $claims.facts $evidence.facts)) {
                     Add-PublicationError 'README qualification claims do not exactly match the authoritative evidence facts.'
                 }

@@ -1,0 +1,6 @@
+<testsuites id="" name="" tests="1" failures="0" skipped="0" errors="0" time="15.446995000000001">
+<testsuite name="specs\auth.spec.ts" timestamp="2026-09-01T09:19:28.358Z" hostname="firefox" tests="1" failures="0" skipped="0" time="14.123" errors="0">
+<testcase name="E10 @session-expiry idle session redirects to Login" classname="specs\auth.spec.ts" time="14.123">
+</testcase>
+</testsuite>
+</testsuites>

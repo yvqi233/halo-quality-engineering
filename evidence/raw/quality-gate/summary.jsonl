@@ -1,0 +1,3 @@
+{"layer":"L0","result":"PASS","durationSeconds":30.559,"failureKind":"NONE","artifactName":"contract"}
+{"layer":"L1","result":"PASS","durationSeconds":59.442,"failureKind":"NONE","artifactName":"api-smoke"}
+{"layer":"L2","result":"PASS","durationSeconds":73.93,"failureKind":"NONE","artifactName":"chromium-e2e"}

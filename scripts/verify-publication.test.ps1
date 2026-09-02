@@ -115,6 +115,11 @@ Fixture status.
 ## Modification History
 
 Fixture history.
+
+<!-- upstream-contribution-detail-v1 -->
+```json
+{"schemaVersion":1,"purpose":"x","reproductionEvidence":"artifacts/evidence.txt","expectedActual":"x","duplicateSearch":"x","prChangeHead":"x","validation":"x","aiDisclosure":"x","reviewFeedback":"x","modificationHistory":["x"]}
+```
 '@
     & git -C $path add README.md docs artifacts evidence
     if ($LASTEXITCODE -ne 0) { throw 'Could not track publication fixture files.' }

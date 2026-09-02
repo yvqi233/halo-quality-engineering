@@ -9,15 +9,15 @@
     "stability": {
       "testedCommit": "04379a211124cd52f7a2d08920dd0866fe24ed55",
       "consecutivePassNoneRuns": 20,
-      "minimumDurationSeconds": 163.370,
+      "minimumDurationSeconds": 163.37,
       "maximumDurationSeconds": 182.204,
       "averageDurationSeconds": 168.103
     },
     "fullGate": {
       "layers": [
-        { "layer": "L0", "result": "PASS", "durationSeconds": 41.640 },
-        { "layer": "L1", "result": "PASS", "durationSeconds": 65.072 },
-        { "layer": "L2", "result": "PASS", "durationSeconds": 77.769 }
+        { "layer": "L0", "result": "PASS", "durationSeconds": 30.559 },
+        { "layer": "L1", "result": "PASS", "durationSeconds": 59.442 },
+        { "layer": "L2", "result": "PASS", "durationSeconds": 73.93 }
       ],
       "preflightMissingEvidence": 0,
       "finalComposeRows": 0
@@ -33,8 +33,12 @@
   },
   "provenance": {
     "stabilityRecord": "artifacts/stability/runs.jsonl",
-    "fullGateSource": "completed Task 9 local phase evidence",
-    "firefoxSource": "completed Firefox local qualification evidence",
+    "gateSummary": "evidence/raw/quality-gate/summary.jsonl",
+    "gateCounts": ["evidence/raw/quality-gate/L0-counts.json", "evidence/raw/quality-gate/L1-counts.json", "evidence/raw/quality-gate/L2-counts.json"],
+    "gatePhases": "evidence/raw/quality-gate/L2-phases.json",
+    "firefoxOrdinaryJunit": "evidence/raw/firefox/ordinary-junit.xml",
+    "firefoxExpiryJunit": "evidence/raw/firefox/expiry-junit.xml",
+    "snapshotNote": "Final sanitized raw artifact snapshot from completed local qualification; not hosted CI.",
     "publicCiRunUrl": null,
     "repositoryRemote": null
   }
