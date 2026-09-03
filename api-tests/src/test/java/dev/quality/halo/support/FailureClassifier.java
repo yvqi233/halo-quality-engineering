@@ -15,6 +15,8 @@ import java.util.Locale;
 
 /** Assigns one gate-blocking attribution from the evidence available for a failed test. */
 public final class FailureClassifier {
+    private static final ThreadLocal<Response> LAST_RESPONSE = new ThreadLocal<>();
+
     private FailureClassifier() {}
 
     public enum FailureKind {
@@ -29,20 +31,34 @@ public final class FailureClassifier {
         Objects.requireNonNull(error, "error");
         Objects.requireNonNull(response, "response");
 
-        if (hasCause(error, AssertionError.class::isInstance) && response.isPresent()) {
-            return FailureKind.PRODUCT;
-        }
-        if (hasCause(error, FailureClassifier::isOpenApiFailure)) {
+        if (hasRelated(error, FailureClassifier::isOpenApiFailure)) {
             return FailureKind.CONTRACT;
         }
-        if (hasCause(error, FailureClassifier::isTestToolFailure)) {
+        if (hasRelated(error, FailureClassifier::isTestToolFailure)) {
             return FailureKind.TEST_TOOL;
         }
-        if (hasCause(error, FailureClassifier::isTypedEnvironmentFailure)
-                || hasCause(error, FailureClassifier::hasEnvironmentMessage)) {
+        if (hasRelated(error, FailureClassifier::isTypedEnvironmentFailure)) {
+            return FailureKind.ENVIRONMENT;
+        }
+        if (hasRelated(error, AssertionError.class::isInstance) && response.isPresent()) {
+            return FailureKind.PRODUCT;
+        }
+        if (hasRelated(error, FailureClassifier::hasEnvironmentMessage)) {
             return FailureKind.ENVIRONMENT;
         }
         return FailureKind.TEST_TOOL;
+    }
+
+    public static void observeResponse(Response response) {
+        LAST_RESPONSE.set(Objects.requireNonNull(response, "response"));
+    }
+
+    static Optional<Response> currentResponse() {
+        return Optional.ofNullable(LAST_RESPONSE.get());
+    }
+
+    static void clearResponse() {
+        LAST_RESPONSE.remove();
     }
 
     private static boolean isTypedEnvironmentFailure(Throwable error) {
@@ -73,14 +89,24 @@ public final class FailureClassifier {
         return type.contains("fixture") || type.contains("cleanup");
     }
 
-    private static boolean hasCause(Throwable error, java.util.function.Predicate<Throwable> predicate) {
+    private static boolean hasRelated(Throwable error, java.util.function.Predicate<Throwable> predicate) {
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        Throwable current = error;
-        while (current != null && seen.add(current)) {
+        java.util.ArrayDeque<Throwable> pending = new java.util.ArrayDeque<>();
+        pending.add(error);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.removeFirst();
+            if (!seen.add(current)) {
+                continue;
+            }
             if (predicate.test(current)) {
                 return true;
             }
-            current = current.getCause();
+            if (current.getCause() != null) {
+                pending.addLast(current.getCause());
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                pending.addLast(suppressed);
+            }
         }
         return false;
     }

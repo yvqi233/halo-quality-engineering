@@ -16,6 +16,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -28,6 +30,7 @@ class PostLifecycleIT {
     private static final URI BASE_URI = URI.create("http://127.0.0.1:8090");
     private static final Duration DEADLINE = Duration.ofSeconds(15);
     private static final Duration INITIAL_DELAY = Duration.ofMillis(100);
+    private static final Duration CONCURRENT_DEADLINE = Duration.ofSeconds(15);
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private HaloFixture fixture;
@@ -149,13 +152,14 @@ class PostLifecycleIT {
         waitForPublic(name, 200);
 
         Response secondPublish = admin.publishPost(name).then().statusCode(200).extract().response();
-        Response stableCollection = Eventually.until(
-                DEADLINE, INITIAL_DELAY, admin::publicPosts, new StablePublicPostCount(name, 3));
+        StablePublicPostCount stableCount = new StablePublicPostCount(name, 3);
+        Response stableCollection = Eventually.until(DEADLINE, INITIAL_DELAY, admin::publicPosts, stableCount);
 
         String firstSnapshot = firstPublish.jsonPath().getString("spec.releaseSnapshot");
         String secondSnapshot = secondPublish.jsonPath().getString("spec.releaseSnapshot");
         assertThat(firstSnapshot).isNotBlank().isEqualTo(secondSnapshot);
         assertThat(stableCollection.statusCode()).isEqualTo(200);
+        assertThat(stableCount.test(stableCollection)).isTrue();
         waitForPublic(name, 200).then().statusCode(200);
     }
 
@@ -184,9 +188,12 @@ class PostLifecycleIT {
         try {
             Future<Response> first = executor.submit(() -> updateBehindLatch(name, requestA, ready, start));
             Future<Response> second = executor.submit(() -> updateBehindLatch(name, requestB, ready, start));
-            ready.await();
-            start.countDown();
-            List<Integer> statuses = List.of(first.get().statusCode(), second.get().statusCode()).stream().sorted().toList();
+            List<Integer> statuses = ConcurrentUpdateAwaiter.await(
+                            ready, start, List.of(first, second), CONCURRENT_DEADLINE)
+                    .stream()
+                    .map(Response::statusCode)
+                    .sorted()
+                    .toList();
             assertThat(statuses).containsExactly(200, 409);
         } finally {
             executor.shutdownNow();
@@ -202,9 +209,12 @@ class PostLifecycleIT {
     }
 
     private Response updateBehindLatch(
-            String name, JsonNode request, CountDownLatch ready, CountDownLatch start) throws InterruptedException {
+            String name, JsonNode request, CountDownLatch ready, CountDownLatch start)
+            throws InterruptedException, TimeoutException {
         ready.countDown();
-        start.await();
+        if (!start.await(CONCURRENT_DEADLINE.toNanos(), TimeUnit.NANOSECONDS)) {
+            throw new TimeoutException("Concurrent update start signal exceeded the deadline");
+        }
         return admin.updatePost(name, request);
     }
 
@@ -216,18 +226,26 @@ class PostLifecycleIT {
     }
 
     private Response waitForPhase(String name, String phase) {
-        return Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), response ->
-                response.statusCode() == 200 && phase.equals(response.jsonPath().getString("status.phase")));
+        Response response = Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), candidate ->
+                candidate.statusCode() == 200 && phase.equals(candidate.jsonPath().getString("status.phase")));
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.jsonPath().getString("status.phase")).isEqualTo(phase);
+        return response;
     }
 
     private Response waitForPublishFlag(String name, boolean publish) {
-        return Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), response ->
-                response.statusCode() == 200 && response.jsonPath().getBoolean("spec.publish") == publish);
+        Response response = Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), candidate ->
+                candidate.statusCode() == 200 && candidate.jsonPath().getBoolean("spec.publish") == publish);
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.jsonPath().getBoolean("spec.publish")).isEqualTo(publish);
+        return response;
     }
 
     private Response waitForPublic(String name, int status) {
-        return Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.publicPost(name),
-                response -> response.statusCode() == status);
+        Response response = Eventually.until(
+                DEADLINE, INITIAL_DELAY, () -> admin.publicPost(name), candidate -> candidate.statusCode() == status);
+        assertThat(response.statusCode()).isEqualTo(status);
+        return response;
     }
 
     private PostState state(String guardName, String countedName) {
@@ -245,16 +263,21 @@ class PostLifecycleIT {
     private Response settledPost(String name) {
         long[] lastVersion = {Long.MIN_VALUE};
         int[] stableObservations = {0};
-        return Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), response -> {
-            if (response.statusCode() != 200 || response.jsonPath().get("status.observedVersion") == null) {
+        Response response = Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), candidate -> {
+            if (candidate.statusCode() != 200 || candidate.jsonPath().get("status.observedVersion") == null) {
                 return false;
             }
-            long version = response.jsonPath().getLong("metadata.version");
-            long observed = response.jsonPath().getLong("status.observedVersion");
+            long version = candidate.jsonPath().getLong("metadata.version");
+            long observed = candidate.jsonPath().getLong("status.observedVersion");
             stableObservations[0] = version == observed && version == lastVersion[0] ? stableObservations[0] + 1 : 1;
             lastVersion[0] = version;
             return version == observed && stableObservations[0] >= 3;
         });
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.jsonPath().getLong("status.observedVersion"))
+                .isEqualTo(response.jsonPath().getLong("metadata.version"));
+        assertThat(stableObservations[0]).isGreaterThanOrEqualTo(3);
+        return response;
     }
 
     private record PostState(long version, String phase, long count) {}

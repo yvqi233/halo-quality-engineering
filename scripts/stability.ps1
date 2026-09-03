@@ -43,21 +43,61 @@ function Get-GateResult {
     }
 
     try {
-        $records = @(Get-Content -LiteralPath $gateSummaryPath | ForEach-Object { ConvertFrom-Json -InputObject $_ })
+        $lines = @(Get-Content -LiteralPath $gateSummaryPath)
+        if ($lines.Count -eq 0 -or @($lines | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            throw 'Gate summary must contain non-blank JSONL records.'
+        }
+        $records = @($lines | ForEach-Object { ConvertFrom-Json -InputObject $_ -ErrorAction Stop })
+        $expectedLayers = if ($Layer -eq 'All') { @('L0', 'L1', 'L2') } else { @($Layer) }
+        $expectedArtifacts = @{ L0 = 'contract'; L1 = 'api-smoke'; L2 = 'chromium-e2e' }
+        $expectedFields = @('artifactName', 'durationSeconds', 'failureKind', 'layer', 'result')
+        $failureKinds = @('ENVIRONMENT', 'PRODUCT', 'CONTRACT', 'TEST_TOOL')
+        if ($records.Count -lt 1 -or $records.Count -gt $expectedLayers.Count) {
+            throw 'Gate summary record count is outside the requested layer contract.'
+        }
+        for ($index = 0; $index -lt $records.Count; $index++) {
+            $record = $records[$index]
+            $actualFields = @($record.PSObject.Properties.Name | Sort-Object)
+            if ((Compare-Object $expectedFields $actualFields).Count -ne 0) {
+                throw 'Gate summary record schema is invalid.'
+            }
+            if ($record.layer -isnot [string] -or $record.layer -ne $expectedLayers[$index] -or
+                $record.artifactName -isnot [string] -or $record.artifactName -ne $expectedArtifacts[$record.layer]) {
+                throw 'Gate summary layer or artifact order is invalid.'
+            }
+            if ($record.result -notin @('PASS', 'FAIL') -or $record.failureKind -notin (@('NONE') + $failureKinds)) {
+                throw 'Gate summary result or failure kind is unsupported.'
+            }
+            if (($record.result -eq 'PASS') -ne ($record.failureKind -eq 'NONE')) {
+                throw 'Gate summary result and failure kind are inconsistent.'
+            }
+            if ($record.durationSeconds -isnot [ValueType] -or $record.durationSeconds -is [bool] -or
+                [double]::IsNaN([double]$record.durationSeconds) -or
+                [double]::IsInfinity([double]$record.durationSeconds) -or [double]$record.durationSeconds -lt 0) {
+                throw 'Gate summary durationSeconds must be finite and non-negative.'
+            }
+        }
     } catch {
         return [pscustomobject]@{ result = 'FAIL'; failureKind = 'TEST_TOOL' }
     }
     $failures = @($records | Where-Object { $_.result -eq 'FAIL' })
-    $complete = $records.Count -eq $expectedLayerCount -and $failures.Count -eq 0
-    if ($ExitCode -eq 0 -and $complete) {
+    $complete = $records.Count -eq $expectedLayerCount
+    if ($ExitCode -eq 0 -and $complete -and $failures.Count -eq 0) {
         return [pscustomobject]@{ result = 'PASS'; failureKind = 'NONE' }
     }
-    $kind = if ($failures.Count -gt 0 -and $failures[0].failureKind) {
-        [string]$failures[0].failureKind
-    } else {
-        'TEST_TOOL'
+    if ($ExitCode -ne 0 -and $failures.Count -eq 1 -and
+        $records[-1].result -eq 'FAIL' -and $records[-1].failureKind -in $failureKinds) {
+        return [pscustomobject]@{ result = 'FAIL'; failureKind = [string]$records[-1].failureKind }
     }
-    return [pscustomobject]@{ result = 'FAIL'; failureKind = $kind }
+    return [pscustomobject]@{ result = 'FAIL'; failureKind = 'TEST_TOOL' }
+}
+
+function Assert-CleanTrackedTree {
+    $trackedChanges = @(& git -C $repoRoot status --short --untracked-files=no)
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the tracked Git tree before qualification.' }
+    if ($trackedChanges.Count -gt 0) {
+        throw "Stability qualification requires a clean tracked tree; found: $($trackedChanges -join ', ')"
+    }
 }
 
 function Preserve-FailureEvidence {
@@ -77,6 +117,7 @@ function Preserve-FailureEvidence {
 if (-not (Test-Path -LiteralPath $gateScript -PathType Leaf)) { throw 'scripts/quality-gate.ps1 is missing.' }
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { throw 'environment/image-lock.env is missing.' }
 
+Assert-CleanTrackedTree
 $commit = Invoke-CheckedNative -FilePath 'git' -Arguments @('-C', $repoRoot, 'rev-parse', 'HEAD') -Description 'Git revision lookup'
 if ($commit -notmatch '^[0-9a-f]{40}$') { throw 'Git revision lookup did not return a full lowercase SHA.' }
 $haloImage = Get-HaloImage

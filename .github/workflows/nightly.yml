@@ -17,20 +17,20 @@ jobs:
       DOCKER_CLI: docker
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '21'
           cache: gradle
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 10.15.1
           run_install: false
       - name: Set up Node 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: pnpm
@@ -55,6 +55,7 @@ jobs:
           $environmentScript = Join-Path $repoRoot 'scripts/environment.ps1'
           $collectorScript = Join-Path $repoRoot 'scripts/collect-evidence.ps1'
           $playwright = Join-Path $repoRoot 'e2e/node_modules/.bin/playwright'
+          . (Join-Path $repoRoot 'scripts/junit-results.ps1')
 
           function Invoke-FirefoxPhase {
             param([string]$Name, [string]$SessionTimeout, [string[]]$Arguments)
@@ -91,6 +92,16 @@ jobs:
                     }
                     throw "Firefox $Name journeys failed with exit code $exitCode."
                   }
+                  $cases = @(Get-JUnitCases -Path $phaseRoot)
+                  Assert-AllCasesPassed -Cases $cases -Description "nightly Firefox $Name"
+                  $expectedIds = if ($Name -eq 'ordinary') {
+                    @('E01', 'E02', 'E03', 'E04', 'E05', 'E06', 'E07', 'E08', 'E09', 'I01', 'I02')
+                  } else {
+                    @('E10')
+                  }
+                  $prefixPattern = if ($Name -eq 'ordinary') { '(?:E|I)\d{2}' } else { 'E\d{2}' }
+                  Assert-ExactCaseInventory -Cases $cases -ExpectedIds $expectedIds `
+                    -PrefixPattern $prefixPattern -Description "nightly Firefox $Name"
                 } finally {
                   Pop-Location
                 }
@@ -169,7 +180,7 @@ jobs:
         id: upload-nightly-junit-xml
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-junit-xml
           path: |
@@ -182,7 +193,7 @@ jobs:
         id: upload-nightly-api-evidence
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-api-evidence
           path: api-tests/build/evidence/**
@@ -192,7 +203,7 @@ jobs:
         id: upload-nightly-playwright-report
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-playwright-report
           path: |
@@ -206,7 +217,7 @@ jobs:
         id: upload-nightly-firefox-evidence
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-firefox-evidence
           path: artifacts/nightly-firefox/**
@@ -216,7 +227,7 @@ jobs:
         id: upload-nightly-playwright-traces
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-playwright-traces
           path: |
@@ -228,7 +239,7 @@ jobs:
         id: upload-nightly-playwright-videos
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-playwright-videos
           path: |
@@ -240,7 +251,7 @@ jobs:
         id: upload-nightly-contract-evidence
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-contract-evidence
           path: |
@@ -253,13 +264,14 @@ jobs:
         id: upload-nightly-gate-metadata
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-gate-metadata
           path: |
             artifacts/quality-gate/**/counts.json
             artifacts/quality-gate/L2/phases.json
             artifacts/quality-gate/**/quarantine.yaml
+            artifacts/quality-gate/L1/failure-classification.jsonl
             artifacts/quality-gate/summary.jsonl
           if-no-files-found: error
           retention-days: 14
@@ -267,7 +279,7 @@ jobs:
         id: upload-nightly-container-logs
         if: always()
         continue-on-error: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nightly-container-logs
           path: artifacts/quality-gate/**/environment/**

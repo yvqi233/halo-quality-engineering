@@ -10,7 +10,7 @@ $defaultRepositoryRoot = Split-Path -Parent $PSScriptRoot
 function Add-ArtifactRequirement {
     param(
         [Collections.Generic.List[object]]$Requirements,
-        [ValidateSet('File', 'Glob', 'Tree')][string]$Type,
+        [ValidateSet('File', 'Glob', 'Tree', 'ForbiddenFile')][string]$Type,
         [string]$Path
     )
 
@@ -23,6 +23,7 @@ function Add-EnvironmentRequirements {
     foreach ($name in @('docker-ps.txt', 'halo.log', 'postgres.log', 'health.json')) {
         Add-ArtifactRequirement -Requirements $Requirements -Type File -Path "$RelativeRoot/$name"
     }
+    Add-ArtifactRequirement -Requirements $Requirements -Type ForbiddenFile -Path "$RelativeRoot/COLLECTION_FAILED.txt"
 }
 
 function Add-L0Requirements {
@@ -226,8 +227,18 @@ function Get-MissingQualityGateArtifacts {
                     @(Get-ChildItem -LiteralPath $resolved -Recurse -File -ErrorAction SilentlyContinue |
                         Where-Object { $_.Length -gt 0 }).Count -gt 0
             }
+            'ForbiddenFile' {
+                -not (Test-Path -LiteralPath $resolved)
+            }
         }
-        if (-not $present) { [void]$missing.Add($requirement.Path) }
+        if (-not $present) {
+            $description = if ($requirement.Type -eq 'ForbiddenFile') {
+                "$($requirement.Path) (evidence collection failed)"
+            } else {
+                $requirement.Path
+            }
+            [void]$missing.Add($description)
+        }
     }
     foreach ($failure in $contractFailures) { [void]$missing.Add($failure) }
     return @($missing | Sort-Object -Unique)

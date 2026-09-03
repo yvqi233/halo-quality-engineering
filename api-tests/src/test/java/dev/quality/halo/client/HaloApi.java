@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.quality.halo.support.EvidenceRedactor;
+import dev.quality.halo.support.FailureClassifier;
 import dev.quality.halo.support.ResourceRef;
 import io.restassured.RestAssured;
 import io.restassured.config.RedirectConfig;
@@ -274,6 +275,7 @@ public final class HaloApi {
                 FilterableResponseSpecification responseSpecification,
                 FilterContext context) {
             Response response = context.next(request, responseSpecification);
+            FailureClassifier.observeResponse(response);
             writer.record(request, response);
             return response;
         }

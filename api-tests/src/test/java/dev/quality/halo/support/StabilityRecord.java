@@ -64,10 +64,14 @@ public record StabilityRecord(
         if (records.size() != requiredRuns) {
             return false;
         }
+        String expectedCommit = records.getFirst().commit;
+        String expectedImage = records.getFirst().haloImage;
         for (int index = 0; index < records.size(); index++) {
             StabilityRecord record = records.get(index);
             if (!record.result.equals("PASS")
                     || !record.failureKind.equals("NONE")
+                    || !record.commit.equals(expectedCommit)
+                    || !record.haloImage.equals(expectedImage)
                     || record.sequence != index + 1) {
                 return false;
             }

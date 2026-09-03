@@ -78,4 +78,30 @@ class StabilityRecordTest {
 
         assertThat(StabilityRecord.hasConsecutiveGreen(records, 20)).isFalse();
     }
+
+    @Test
+    void qualifyingRunsRequireOneCommitAndOneImage() throws Exception {
+        var records = new ArrayList<>(
+                StabilityRecord.read(Path.of("src/test/resources/stability/twenty-green.jsonl")));
+        StabilityRecord original = records.get(9);
+        records.set(9, new StabilityRecord(
+                original.sequence(),
+                original.startedAt(),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                original.haloImage(),
+                original.result(),
+                original.durationSeconds(),
+                original.failureKind()));
+        assertThat(StabilityRecord.hasConsecutiveGreen(records, 20)).isFalse();
+
+        records.set(9, new StabilityRecord(
+                original.sequence(),
+                original.startedAt(),
+                original.commit(),
+                "halohub/halo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                original.result(),
+                original.durationSeconds(),
+                original.failureKind()));
+        assertThat(StabilityRecord.hasConsecutiveGreen(records, 20)).isFalse();
+    }
 }

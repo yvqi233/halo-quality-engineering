@@ -72,7 +72,7 @@ public final class HaloFixture implements AutoCloseable {
             trackedPosts.forEach(name -> {
                 try {
                     waitForSettledPost(name);
-                } catch (RuntimeException error) {
+                } catch (RuntimeException | Eventually.ConditionTimeoutException error) {
                     settlingFailures.add(new CleanupIssue(name, error));
                 }
             });

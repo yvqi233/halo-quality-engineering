@@ -192,8 +192,11 @@ class PostPermissionIT {
     }
 
     private Response waitForPhase(String name, String phase) {
-        return Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), response ->
-                response.statusCode() == 200 && phase.equals(response.jsonPath().getString("status.phase")));
+        Response response = Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), candidate ->
+                candidate.statusCode() == 200 && phase.equals(candidate.jsonPath().getString("status.phase")));
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.jsonPath().getString("status.phase")).isEqualTo(phase);
+        return response;
     }
 
     private PostState state(String guardName, String countedName) {
@@ -216,16 +219,21 @@ class PostPermissionIT {
     private Response settledPost(String name) {
         long[] lastVersion = {Long.MIN_VALUE};
         int[] stableObservations = {0};
-        return Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), response -> {
-            if (response.statusCode() != 200 || response.jsonPath().get("status.observedVersion") == null) {
+        Response response = Eventually.until(DEADLINE, INITIAL_DELAY, () -> admin.consolePost(name), candidate -> {
+            if (candidate.statusCode() != 200 || candidate.jsonPath().get("status.observedVersion") == null) {
                 return false;
             }
-            long version = response.jsonPath().getLong("metadata.version");
-            long observed = response.jsonPath().getLong("status.observedVersion");
+            long version = candidate.jsonPath().getLong("metadata.version");
+            long observed = candidate.jsonPath().getLong("status.observedVersion");
             stableObservations[0] = version == observed && version == lastVersion[0] ? stableObservations[0] + 1 : 1;
             lastVersion[0] = version;
             return version == observed && stableObservations[0] >= 3;
         });
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.jsonPath().getLong("status.observedVersion"))
+                .isEqualTo(response.jsonPath().getLong("metadata.version"));
+        assertThat(stableObservations[0]).isGreaterThanOrEqualTo(3);
+        return response;
     }
 
     private record PostState(long version, String phase, long count) {}

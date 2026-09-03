@@ -15,6 +15,7 @@ $captureScript = Join-Path $PSScriptRoot 'capture-openapi.ps1'
 $collectorScript = Join-Path $PSScriptRoot 'collect-evidence.ps1'
 $quarantineValidator = Join-Path $PSScriptRoot 'validate-quarantine.mjs'
 $quarantinePath = Join-Path $repoRoot 'docs/quarantine.yaml'
+. (Join-Path $PSScriptRoot 'junit-results.ps1')
 $isWindowsPlatform = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows)
 $gradleCommand = if ($isWindowsPlatform) {
@@ -111,6 +112,43 @@ function Set-GateFailureKind {
     param([ValidateSet('ENVIRONMENT', 'PRODUCT', 'CONTRACT', 'TEST_TOOL')][string]$Kind)
 
     $script:GateFailureKind = $Kind
+}
+
+function Get-JavaFailureKind {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or (Get-Item -LiteralPath $Path).Length -eq 0) {
+        return 'TEST_TOOL'
+    }
+    try {
+        $records = @(Get-Content -LiteralPath $Path | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { ConvertFrom-Json -InputObject $_ -ErrorAction Stop })
+        if ($records.Count -eq 0) { throw 'No classification records were present.' }
+        $expectedFields = @('failureKind', 'schemaVersion', 'testClass', 'testId', 'testMethod')
+        $allowedKinds = @('ENVIRONMENT', 'PRODUCT', 'CONTRACT', 'TEST_TOOL')
+        foreach ($record in $records) {
+            $actualFields = @($record.PSObject.Properties.Name | Sort-Object)
+            if ((Compare-Object $expectedFields $actualFields).Count -ne 0) {
+                throw 'Classification record schema is invalid.'
+            }
+            if ($record.schemaVersion -isnot [int] -or $record.schemaVersion -ne 1) {
+                throw 'Classification schemaVersion must be integer 1.'
+            }
+            foreach ($field in @('testId', 'testClass', 'testMethod', 'failureKind')) {
+                if ($record.$field -isnot [string] -or [string]::IsNullOrWhiteSpace($record.$field)) {
+                    throw "Classification $field must be a non-empty string."
+                }
+            }
+            if ($record.failureKind -notin $allowedKinds) {
+                throw "Unsupported Java failure kind: $($record.failureKind)"
+            }
+        }
+        $kinds = @($records.failureKind | Sort-Object -Unique)
+        if ($kinds.Count -ne 1) { throw 'Java failure evidence contains mixed attribution.' }
+        return $kinds[0]
+    } catch {
+        return 'TEST_TOOL'
+    }
 }
 
 function Invoke-LayerPhase {
@@ -217,62 +255,6 @@ function Get-ExcludedIds {
     return @($Entries | ForEach-Object { $_.testId } | Where-Object { $_ -in $AllowedIds } | Sort-Object -Unique)
 }
 
-function Get-JUnitCases {
-    param([string]$Path)
-
-    $files = @(Get-ChildItem -LiteralPath $Path -Filter '*.xml' -File -ErrorAction SilentlyContinue)
-    if ($files.Count -eq 0) { throw "No JUnit XML files found at $Path." }
-    $cases = [Collections.Generic.List[object]]::new()
-    foreach ($file in $files) {
-        [xml]$document = Get-Content -Raw -LiteralPath $file.FullName
-        foreach ($testcase in @($document.SelectNodes('//testcase'))) {
-            [void]$cases.Add([pscustomobject]@{ name = [string]$testcase.name; classname = [string]$testcase.classname })
-        }
-    }
-    return @($cases)
-}
-
-function Assert-ExactIds {
-    param([object[]]$Cases, [string[]]$ExpectedIds, [string]$PrefixPattern, [string]$Description)
-
-    $actualIds = @($Cases | ForEach-Object {
-        $match = [regex]::Match($_.name, "^($PrefixPattern)\s")
-        if ($match.Success) { $match.Groups[1].Value }
-    })
-    $difference = if ($ExpectedIds.Count -eq 0 -and $actualIds.Count -eq 0) {
-        @()
-    } else {
-        @(Compare-Object @($ExpectedIds | Sort-Object) @($actualIds | Sort-Object))
-    }
-    if ($difference.Count -gt 0 -or $actualIds.Count -ne $ExpectedIds.Count) {
-        throw "$Description inventory mismatch. Expected $($ExpectedIds.Count), observed $($actualIds.Count)."
-    }
-}
-
-function Assert-ExactCaseInventory {
-    param([object[]]$Cases, [string[]]$ExpectedIds, [string]$PrefixPattern, [string]$Description)
-
-    $actualIds = [Collections.Generic.List[string]]::new()
-    $unclassified = [Collections.Generic.List[string]]::new()
-    foreach ($case in $Cases) {
-        $match = [regex]::Match($case.name, "^($PrefixPattern)\s")
-        if ($match.Success) {
-            [void]$actualIds.Add($match.Groups[1].Value)
-        } else {
-            [void]$unclassified.Add($case.name)
-        }
-    }
-    $difference = if ($ExpectedIds.Count -eq 0 -and $actualIds.Count -eq 0) {
-        @()
-    } else {
-        @(Compare-Object @($ExpectedIds | Sort-Object) @($actualIds | Sort-Object))
-    }
-    if ($unclassified.Count -gt 0 -or $difference.Count -gt 0 -or $Cases.Count -ne $ExpectedIds.Count) {
-        $unclassifiedText = if ($unclassified.Count -eq 0) { 'none' } else { $unclassified -join ', ' }
-        throw "$Description inventory mismatch. Expected $($ExpectedIds.Count) exact records, observed $($Cases.Count); unclassified: $unclassifiedText."
-    }
-}
-
 function Write-Counts {
     param([string]$Path, [Collections.Specialized.OrderedDictionary]$Counts)
 
@@ -334,6 +316,7 @@ function Invoke-L0 {
         Remove-SafeTree (Join-Path $repoRoot 'api-tests/build/reports/tests/test')
         Invoke-NativeCommand -FilePath $gradleCommand -Arguments @(':api-tests:compileTestJava', ':api-tests:test') -Description 'L0 Java compile/unit'
         $unitCases = @(Get-JUnitCases (Join-Path $repoRoot 'api-tests/build/test-results/test'))
+        Assert-AllCasesPassed -Cases $unitCases -Description 'L0 Java unit suite'
         $entries = @(Get-QuarantineEntries $layerRoot)
         Set-GateFailureKind 'CONTRACT'
         Invoke-OpenApiComparison $layerRoot
@@ -359,6 +342,8 @@ function Invoke-L1 {
         $excluded = @(Get-ExcludedIds -Entries $entries -AllowedIds $ExpectedApiScenarioIds)
         $selectedIds = @($ExpectedApiScenarioIds | Where-Object { $_ -notin $excluded })
         Remove-SafeTree (Join-Path $repoRoot 'api-tests/build/evidence')
+        $javaClassificationPath = Join-Path $repoRoot 'api-tests/build/failure-classification/integrationTest.jsonl'
+        Remove-SafeTree $javaClassificationPath
         $arguments = [Collections.Generic.List[string]]::new()
         [void]$arguments.Add(':api-tests:integrationTest')
         if ($excluded.Count -gt 0) {
@@ -369,8 +354,22 @@ function Invoke-L1 {
                 [void]$arguments.Add($ApiTestPatterns[$id])
             }
         }
-        Set-GateFailureKind 'PRODUCT'
-        Invoke-NativeCommand -FilePath $gradleCommand -Arguments @($arguments) -Description 'L1 API matrix'
+        try {
+            Invoke-NativeCommand -FilePath $gradleCommand -Arguments @($arguments) -Description 'L1 API matrix'
+        } catch {
+            if (Test-Path -LiteralPath $javaClassificationPath -PathType Leaf) {
+                Copy-Item -LiteralPath $javaClassificationPath `
+                    -Destination (Join-Path $layerRoot 'failure-classification.jsonl') -Force
+            }
+            Set-GateFailureKind (Get-JavaFailureKind -Path $javaClassificationPath)
+            throw
+        }
+        if (Test-Path -LiteralPath $javaClassificationPath -PathType Leaf) {
+            Copy-Item -LiteralPath $javaClassificationPath `
+                -Destination (Join-Path $layerRoot 'failure-classification.jsonl') -Force
+            Set-GateFailureKind 'TEST_TOOL'
+            throw 'Passing L1 Gradle execution produced failure-classification records.'
+        }
         Set-GateFailureKind 'TEST_TOOL'
         $cases = @(Get-JUnitCases (Join-Path $repoRoot 'api-tests/build/test-results/integrationTest'))
         Assert-ExactIds -Cases $cases -ExpectedIds $selectedIds -PrefixPattern '[APR]\d{2}' -Description 'L1 API scenario'

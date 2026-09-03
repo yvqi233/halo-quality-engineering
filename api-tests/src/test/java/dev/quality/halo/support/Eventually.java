@@ -36,10 +36,24 @@ public final class Eventually {
             }
             long elapsed = System.nanoTime() - started;
             if (elapsed >= deadlineNanos) {
-                return last;
+                throw new ConditionTimeoutException(last);
             }
             LockSupport.parkNanos(Math.min(delayNanos, deadlineNanos - elapsed));
             delayNanos = Math.min(delayNanos * 2, MAX_DELAY_NANOS);
         } while (true);
+    }
+
+    public static final class ConditionTimeoutException extends AssertionError {
+        private final Response lastObservation;
+
+        private ConditionTimeoutException(Response lastObservation) {
+            super("Condition was not satisfied before the deadline; last observation was HTTP "
+                    + lastObservation.statusCode());
+            this.lastObservation = lastObservation;
+        }
+
+        public Response lastObservation() {
+            return lastObservation;
+        }
     }
 }

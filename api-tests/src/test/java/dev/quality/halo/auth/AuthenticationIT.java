@@ -167,16 +167,22 @@ class AuthenticationIT {
     private Response settledPost(String name) {
         long[] lastVersion = {Long.MIN_VALUE};
         int[] stableObservations = {0};
-        return Eventually.until(Duration.ofSeconds(15), Duration.ofMillis(100), () -> admin.consolePost(name), response -> {
-            if (response.statusCode() != 200 || response.jsonPath().get("status.observedVersion") == null) {
+        Response response = Eventually.until(
+                Duration.ofSeconds(15), Duration.ofMillis(100), () -> admin.consolePost(name), candidate -> {
+            if (candidate.statusCode() != 200 || candidate.jsonPath().get("status.observedVersion") == null) {
                 return false;
             }
-            long version = response.jsonPath().getLong("metadata.version");
-            long observed = response.jsonPath().getLong("status.observedVersion");
+            long version = candidate.jsonPath().getLong("metadata.version");
+            long observed = candidate.jsonPath().getLong("status.observedVersion");
             stableObservations[0] = version == observed && version == lastVersion[0] ? stableObservations[0] + 1 : 1;
             lastVersion[0] = version;
             return version == observed && stableObservations[0] >= 3;
         });
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.jsonPath().getLong("status.observedVersion"))
+                .isEqualTo(response.jsonPath().getLong("metadata.version"));
+        assertThat(stableObservations[0]).isGreaterThanOrEqualTo(3);
+        return response;
     }
 
     private static String scenarioId(TestInfo testInfo) {

@@ -86,8 +86,22 @@ function Test-JsonValueEqual {
     param($Left, $Right)
 
     if ($null -eq $Left -or $null -eq $Right) { return $null -eq $Left -and $null -eq $Right }
-    if ($Left -is [Collections.IEnumerable] -and -not ($Left -is [string]) -and
-        $Right -is [Collections.IEnumerable] -and -not ($Right -is [string])) {
+    $leftObject = $Left -is [Management.Automation.PSCustomObject] -or $Left -is [Collections.IDictionary]
+    $rightObject = $Right -is [Management.Automation.PSCustomObject] -or $Right -is [Collections.IDictionary]
+    if ($leftObject -or $rightObject) {
+        if (-not ($leftObject -and $rightObject)) { return $false }
+        $leftNames = @($Left.PSObject.Properties.Name | Sort-Object)
+        $rightNames = @($Right.PSObject.Properties.Name | Sort-Object)
+        if (($leftNames -join '|') -cne ($rightNames -join '|')) { return $false }
+        foreach ($name in $leftNames) {
+            if (-not (Test-JsonValueEqual $Left.$name $Right.$name)) { return $false }
+        }
+        return $true
+    }
+    $leftArray = $Left -is [Collections.IEnumerable] -and -not ($Left -is [string])
+    $rightArray = $Right -is [Collections.IEnumerable] -and -not ($Right -is [string])
+    if ($leftArray -or $rightArray) {
+        if (-not ($leftArray -and $rightArray)) { return $false }
         $leftItems = @($Left)
         $rightItems = @($Right)
         if ($leftItems.Count -ne $rightItems.Count) { return $false }
@@ -96,16 +110,32 @@ function Test-JsonValueEqual {
         }
         return $true
     }
-    if ($Left -is [psobject] -and $Left -isnot [string]) {
-        $leftNames = @($Left.PSObject.Properties.Name | Sort-Object)
-        $rightNames = @($Right.PSObject.Properties.Name | Sort-Object)
-        if (($leftNames -join '|') -ne ($rightNames -join '|')) { return $false }
-        foreach ($name in $leftNames) {
-            if (-not (Test-JsonValueEqual $Left.$name $Right.$name)) { return $false }
-        }
-        return $true
+    $numericTypes = [Type[]]@(
+        [System.Byte], [System.SByte], [System.Int16], [System.UInt16], [System.Int32], [System.UInt32],
+        [System.Int64], [System.UInt64], [System.Single], [System.Double], [System.Decimal]
+    )
+    $leftKind = if ($Left -is [string]) {
+        'STRING'
+    } elseif ($Left -is [bool]) {
+        'BOOLEAN'
+    } elseif (@($numericTypes | Where-Object { $_.IsInstanceOfType($Left) }).Count -gt 0) {
+        'NUMBER'
+    } else {
+        $Left.GetType().FullName
     }
-    return ([string]$Left -eq [string]$Right)
+    $rightKind = if ($Right -is [string]) {
+        'STRING'
+    } elseif ($Right -is [bool]) {
+        'BOOLEAN'
+    } elseif (@($numericTypes | Where-Object { $_.IsInstanceOfType($Right) }).Count -gt 0) {
+        'NUMBER'
+    } else {
+        $Right.GetType().FullName
+    }
+    if ($leftKind -cne $rightKind) { return $false }
+    if ($leftKind -eq 'NUMBER') { return [double]$Left -eq [double]$Right }
+    if ($leftKind -eq 'STRING') { return [string]$Left -ceq [string]$Right }
+    return $Left -eq $Right
 }
 
 function Test-QualificationFacts {
@@ -115,15 +145,15 @@ function Test-QualificationFacts {
     foreach ($field in @('stability', 'fullGate', 'firefox')) {
         if (-not $Facts.PSObject.Properties.Name.Contains($field)) { Add-PublicationError "$Description facts are missing $field." }
     }
-    if ($Facts.stability.consecutivePassNoneRuns -lt 1 -or $Facts.stability.minimumDurationSeconds -gt $Facts.stability.maximumDurationSeconds) {
+    if ($Facts.stability.consecutivePassNoneRuns -ne 20 -or $Facts.stability.minimumDurationSeconds -gt $Facts.stability.maximumDurationSeconds) {
         Add-PublicationError "$Description stability facts are invalid."
     }
     $layers = @($Facts.fullGate.layers)
     if ($layers.Count -ne 3 -or (@($layers.layer) -join '|') -ne 'L0|L1|L2' -or @($layers | Where-Object { $_.result -ne 'PASS' -or $_.durationSeconds -lt 0 }).Count -gt 0) {
         Add-PublicationError "$Description full-gate layer facts are invalid."
     }
-    if ($Facts.firefox.ordinaryPassed -gt $Facts.firefox.ordinaryExpected -or
-        $Facts.firefox.isolatedExpiryPassed -gt $Facts.firefox.isolatedExpiryExpected) {
+    if ($Facts.firefox.ordinaryPassed -ne $Facts.firefox.ordinaryExpected -or
+        $Facts.firefox.isolatedExpiryPassed -ne $Facts.firefox.isolatedExpiryExpected) {
         Add-PublicationError "$Description Firefox or evidence facts are invalid."
     }
 }
@@ -173,13 +203,63 @@ function Get-DerivedQualificationFacts {
     $phases = Get-Content -Raw -LiteralPath $paths.gatePhases | ConvertFrom-Json
     [xml]$ordinary = Get-Content -Raw -LiteralPath $paths.firefoxOrdinaryJunit
     [xml]$expiry = Get-Content -Raw -LiteralPath $paths.firefoxExpiryJunit
-    $passes = @($stability | Where-Object { $_.result -eq 'PASS' -and $_.failureKind -eq 'NONE' })
-    $durations = @($stability.durationSeconds)
-    if ($stability.Count -eq 0 -or $passes.Count -ne $stability.Count -or @($stability | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.commit) -or [string]::IsNullOrWhiteSpace([string]$_.haloImage) }).Count -gt 0) {
-        throw 'Qualification raw stability records are incomplete or contain a non-passing run.'
+    if ($stability.Count -ne 20) {
+        throw "Qualification raw stability records must contain exactly sequences 1 through 20; found $($stability.Count) rows."
     }
-    if ($gate.Count -ne 3 -or (@($gate.layer) -join '|') -ne 'L0|L1|L2' -or @($gate | Where-Object { $_.result -ne 'PASS' -or $_.durationSeconds -lt 0 }).Count -gt 0) {
+    $stabilityFields = @('commit', 'durationSeconds', 'failureKind', 'haloImage', 'result', 'sequence', 'startedAt')
+    $expectedCommit = [string]$stability[0].commit
+    $expectedImage = [string]$stability[0].haloImage
+    $durations = [Collections.Generic.List[double]]::new()
+    for ($index = 0; $index -lt $stability.Count; $index++) {
+        $record = $stability[$index]
+        if ((Compare-Object $stabilityFields @($record.PSObject.Properties.Name | Sort-Object)).Count -ne 0) {
+            throw 'Qualification raw stability records must use the exact seven-field schema.'
+        }
+        if ($record.sequence -isnot [int] -or $record.sequence -ne ($index + 1)) {
+            throw "Qualification raw stability records must contain exactly sequences 1 through 20; position $($index + 1) contains '$($record.sequence)'."
+        }
+        $parsedStartedAt = [DateTimeOffset]::MinValue
+        if ($record.startedAt -isnot [string] -or -not [DateTimeOffset]::TryParse($record.startedAt, [ref]$parsedStartedAt)) {
+            throw 'Qualification raw stability startedAt values must be ISO-8601 timestamps.'
+        }
+        if ($record.commit -isnot [string] -or $record.commit -notmatch '^[0-9a-f]{40}$' -or
+            $record.haloImage -isnot [string] -or $record.haloImage -notmatch '.+@sha256:[0-9a-f]{64}$') {
+            throw 'Qualification raw stability commit or image identity is invalid.'
+        }
+        if ($record.commit -cne $expectedCommit -or $record.haloImage -cne $expectedImage) {
+            throw 'Qualification raw stability records must identify one commit and one image.'
+        }
+        if ($record.result -isnot [string] -or $record.failureKind -isnot [string]) {
+            throw 'Qualification raw stability result and failureKind must be strings.'
+        }
+        if ($record.result -cne 'PASS' -or $record.failureKind -cne 'NONE') {
+            throw 'Qualification raw stability records are incomplete or contain a non-passing run.'
+        }
+        if ($record.durationSeconds -isnot [ValueType] -or $record.durationSeconds -is [bool] -or
+            [double]::IsNaN([double]$record.durationSeconds) -or
+            [double]::IsInfinity([double]$record.durationSeconds) -or [double]$record.durationSeconds -lt 0) {
+            throw 'Qualification raw stability duration is invalid.'
+        }
+        [void]$durations.Add([double]$record.durationSeconds)
+    }
+    $gateFields = @('artifactName', 'durationSeconds', 'failureKind', 'layer', 'result')
+    $gateLayers = @('L0', 'L1', 'L2')
+    $gateArtifacts = @('contract', 'api-smoke', 'chromium-e2e')
+    if ($gate.Count -ne 3) {
         throw 'Qualification raw gate summary must contain passing L0, L1, and L2 results.'
+    }
+    for ($index = 0; $index -lt $gate.Count; $index++) {
+        $record = $gate[$index]
+        if ((Compare-Object $gateFields @($record.PSObject.Properties.Name | Sort-Object)).Count -ne 0 -or
+            $record.layer -isnot [string] -or $record.artifactName -isnot [string] -or
+            $record.result -isnot [string] -or $record.failureKind -isnot [string] -or
+            $record.layer -cne $gateLayers[$index] -or $record.artifactName -cne $gateArtifacts[$index] -or
+            $record.result -cne 'PASS' -or $record.failureKind -cne 'NONE' -or
+            $record.durationSeconds -isnot [ValueType] -or $record.durationSeconds -is [bool] -or
+            [double]::IsNaN([double]$record.durationSeconds) -or
+            [double]::IsInfinity([double]$record.durationSeconds) -or [double]$record.durationSeconds -lt 0) {
+            throw 'Qualification raw gate summary must use the exact schema and passing L0, L1, and L2 outcomes.'
+        }
     }
     if ($phases.schemaVersion -ne 1) { throw 'Qualification raw gate phases must use schemaVersion 1.' }
     foreach ($phaseName in @('ordinary', 'expiry')) {
@@ -215,7 +295,7 @@ function Get-DerivedQualificationFacts {
     $ordinaryOutcome = Get-JunitOutcome -Document $ordinary -Description 'Qualification raw ordinary Firefox JUnit'
     $expiryOutcome = Get-JunitOutcome -Document $expiry -Description 'Qualification raw expiry Firefox JUnit'
     return [pscustomobject]@{
-        stability = [pscustomobject]@{ testedCommit = [string]$stability[0].commit; consecutivePassNoneRuns = $passes.Count; minimumDurationSeconds = [Math]::Round(($durations | Measure-Object -Minimum).Minimum, 3); maximumDurationSeconds = [Math]::Round(($durations | Measure-Object -Maximum).Maximum, 3); averageDurationSeconds = [Math]::Round(($durations | Measure-Object -Average).Average, 3) }
+        stability = [pscustomobject]@{ testedCommit = $expectedCommit; consecutivePassNoneRuns = $stability.Count; minimumDurationSeconds = [Math]::Round(($durations | Measure-Object -Minimum).Minimum, 3); maximumDurationSeconds = [Math]::Round(($durations | Measure-Object -Maximum).Maximum, 3); averageDurationSeconds = [Math]::Round(($durations | Measure-Object -Average).Average, 3) }
         fullGate = [pscustomobject]@{ layers = @($gate | ForEach-Object { [pscustomobject]@{ layer = $_.layer; result = $_.result; durationSeconds = $_.durationSeconds } }) }
         firefox = [pscustomobject]@{ ordinaryPassed = $ordinaryOutcome.passed; ordinaryExpected = $ordinaryOutcome.expected; isolatedExpiryPassed = $expiryOutcome.passed; isolatedExpiryExpected = $expiryOutcome.expected; userJourneys = [int]$journeyCounts.totalJourneys }
     }
@@ -498,7 +578,7 @@ if (-not $tracked.ContainsKey($ledgerRelativePath)) {
 }
 
 if ($errors.Count -gt 0) {
-    $errors | ForEach-Object { Write-Error $_ }
+    $errors | ForEach-Object { Write-Error $_ -ErrorAction Continue }
     exit 1
 }
 

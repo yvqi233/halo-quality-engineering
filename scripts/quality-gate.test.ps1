@@ -73,26 +73,49 @@ $greenLayers = @(
 $greenOutcome = Get-GateOutcome -RequestedLayer All -RequestedCount 3 -Results $greenLayers
 Assert-True ($greenOutcome.result -eq 'PASS' -and $greenOutcome.exitCode -eq 0) 'Three formal green layers must return exit 0.'
 Assert-True ($greenOutcome.durationSeconds -eq 6.6) 'Formal All duration must be the measured layer sum.'
+$junitOutcomeRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-junit-outcomes-$([Guid]::NewGuid().ToString('N'))"
+try {
+    New-Item -ItemType Directory -Force -Path $junitOutcomeRoot | Out-Null
+    @'
+<testsuite tests="4" failures="1" errors="1" skipped="1">
+  <testcase name="E01 passing" classname="fixture" />
+  <testcase name="E02 skipped" classname="fixture"><skipped message="disabled" /></testcase>
+  <testcase name="I01 failed" classname="fixture"><failure message="assertion" /></testcase>
+  <testcase name="I02 errored" classname="fixture"><error message="setup" /></testcase>
+</testsuite>
+'@ | Set-Content -LiteralPath (Join-Path $junitOutcomeRoot 'outcomes.xml') -Encoding utf8
+    $outcomeCases = @(Get-JUnitCases -Path $junitOutcomeRoot)
+    Assert-True ((@($outcomeCases.outcome) -join '|') -eq 'PASS|SKIPPED|FAILURE|ERROR') `
+        'JUnit testcase outcomes must be parsed from skipped/failure/error child elements.'
+    foreach ($outcome in @('SKIPPED', 'FAILURE', 'ERROR')) {
+        $nonPassing = @($outcomeCases | Where-Object { $_.outcome -eq $outcome })
+        Assert-Throws {
+            Assert-AllCasesPassed -Cases $nonPassing -Description "$outcome fixture"
+        } 'non-passing' "$outcome testcase must fail gate validation."
+    }
+} finally {
+    Remove-Item -LiteralPath $junitOutcomeRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 $validOrdinaryCases = @('E01', 'E02', 'I01', 'I02') | ForEach-Object {
-    [pscustomobject]@{ name = "$_ case"; classname = 'fixture' }
+    [pscustomobject]@{ name = "$_ case"; classname = 'fixture'; outcome = 'PASS' }
 }
 Assert-ExactCaseInventory -Cases $validOrdinaryCases -ExpectedIds @('E01', 'E02', 'I01', 'I02') `
     -PrefixPattern '(?:E|I)\d{2}' -Description 'valid L2 ordinary fixture'
 $wrongInfrastructureCases = @('E01', 'E02', 'I03', 'I04') | ForEach-Object {
-    [pscustomobject]@{ name = "$_ case"; classname = 'fixture' }
+    [pscustomobject]@{ name = "$_ case"; classname = 'fixture'; outcome = 'PASS' }
 }
 Assert-Throws {
     Assert-ExactCaseInventory -Cases $wrongInfrastructureCases -ExpectedIds @('E01', 'E02', 'I01', 'I02') `
         -PrefixPattern '(?:E|I)\d{2}' -Description 'wrong L2 infrastructure fixture'
 } 'inventory mismatch' 'I03/I04 must not satisfy the I01/I02 infrastructure contract.'
-$extraOrdinaryCases = @($validOrdinaryCases) + @([pscustomobject]@{ name = 'unexpected helper'; classname = 'fixture' })
+$extraOrdinaryCases = @($validOrdinaryCases) + @([pscustomobject]@{ name = 'unexpected helper'; classname = 'fixture'; outcome = 'PASS' })
 Assert-Throws {
     Assert-ExactCaseInventory -Cases $extraOrdinaryCases -ExpectedIds @('E01', 'E02', 'I01', 'I02') `
         -PrefixPattern '(?:E|I)\d{2}' -Description 'extra L2 ordinary fixture'
 } 'unclassified' 'Unclassified ordinary records must fail the exact inventory.'
 $extraExpiryCases = @(
-    [pscustomobject]@{ name = 'E10 case'; classname = 'fixture' },
-    [pscustomobject]@{ name = 'unexpected expiry helper'; classname = 'fixture' }
+    [pscustomobject]@{ name = 'E10 case'; classname = 'fixture'; outcome = 'PASS' },
+    [pscustomobject]@{ name = 'unexpected expiry helper'; classname = 'fixture'; outcome = 'PASS' }
 )
 Assert-Throws {
     Assert-ExactCaseInventory -Cases $extraExpiryCases -ExpectedIds @('E10') `
@@ -113,6 +136,37 @@ try {
 } finally {
     Remove-Item -LiteralPath $markerRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+$classificationRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-java-classification-$([Guid]::NewGuid().ToString('N'))"
+try {
+    New-Item -ItemType Directory -Force -Path $classificationRoot | Out-Null
+    foreach ($kind in @('ENVIRONMENT', 'PRODUCT', 'CONTRACT', 'TEST_TOOL')) {
+        $path = Join-Path $classificationRoot "$kind.jsonl"
+        "{`"schemaVersion`":1,`"testId`":`"R01`",`"testClass`":`"fixture.Case`",`"testMethod`":`"fails`",`"failureKind`":`"$kind`"}" |
+            Set-Content -LiteralPath $path -Encoding utf8
+        Assert-True ((Get-JavaFailureKind -Path $path) -eq $kind) `
+            "Machine-readable Java evidence must retain $kind attribution."
+    }
+    Assert-True ((Get-JavaFailureKind -Path (Join-Path $classificationRoot 'missing.jsonl')) -eq 'TEST_TOOL') `
+        'Absent Java failure evidence must fail closed as TEST_TOOL.'
+    $malformed = Join-Path $classificationRoot 'malformed.jsonl'
+    Set-Content -LiteralPath $malformed -Value '{not-json' -Encoding utf8
+    Assert-True ((Get-JavaFailureKind -Path $malformed) -eq 'TEST_TOOL') `
+        'Malformed Java failure evidence must fail closed as TEST_TOOL.'
+    $unsupported = Join-Path $classificationRoot 'unsupported.jsonl'
+    Set-Content -LiteralPath $unsupported `
+        -Value '{"schemaVersion":1,"testId":"R01","testClass":"fixture.Case","testMethod":"fails","failureKind":"FLAKY_CANDIDATE"}' -Encoding utf8
+    Assert-True ((Get-JavaFailureKind -Path $unsupported) -eq 'TEST_TOOL') `
+        'A single Java failure must never be accepted as FLAKY_CANDIDATE.'
+    $mixed = Join-Path $classificationRoot 'mixed.jsonl'
+    @(
+        '{"schemaVersion":1,"testId":"R01","testClass":"fixture.One","testMethod":"fails","failureKind":"PRODUCT"}',
+        '{"schemaVersion":1,"testId":"R02","testClass":"fixture.Two","testMethod":"fails","failureKind":"ENVIRONMENT"}'
+    ) | Set-Content -LiteralPath $mixed -Encoding utf8
+    Assert-True ((Get-JavaFailureKind -Path $mixed) -eq 'TEST_TOOL') `
+        'Mixed Java failure attribution must fail closed as TEST_TOOL.'
+} finally {
+    Remove-Item -LiteralPath $classificationRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 Assert-Match $runner 'validate-quarantine\.mjs' 'L0 must validate quarantine policy.'
 Assert-Match $runner 'capture-openapi\.ps1' 'L0 must consume the reviewed live OpenAPI capture interface.'
 Assert-Match $runner 'halo-2\.26-openapi\.json' 'L0 must compare against the committed baseline.'
@@ -120,6 +174,10 @@ Assert-Match $runner ':api-tests:compileTestJava' 'L0 must compile Java test cod
 Assert-Match $runner ':api-tests:test' 'L0 must run Java unit tests.'
 Assert-Ordered $runner @("api-tests/build/classes/java/test'", "api-tests/build/test-results/test'", "api-tests/build/reports/tests/test'", "@(':api-tests:compileTestJava', ':api-tests:test')") 'L0 must invalidate generated compile/test outputs before its single Gradle invocation.'
 Assert-Match $runner ':api-tests:integrationTest' 'L1 must use the existing integration task.'
+Assert-Match $runner 'failure-classification[\\/]integrationTest\.jsonl' 'L1 must consume the JUnit-emitted classification artifact.'
+Assert-Match $runner 'Get-JavaFailureKind' 'L1 Gradle failures must be attributed from machine-readable Java evidence.'
+Assert-True (-not [regex]::IsMatch($runner, 'Set-GateFailureKind ''PRODUCT''\s*\r?\n\s*Invoke-NativeCommand -FilePath \$gradleCommand')) `
+    'L1 must not default every Gradle failure to PRODUCT.'
 Assert-Match $runner 'ExpectedApiScenarioIds' 'L1 must enforce the exact API scenario inventory.'
 Assert-Match $runner "@\('E01'.*'E10'\)" 'L2 must enforce E01-E10.'
 Assert-Match $runner 'Assert-ExactCaseInventory' 'L2 must reject extra or misidentified test records.'
@@ -143,12 +201,18 @@ foreach ($workflowPath in @($prWorkflowPath, $nightlyWorkflowPath)) {
     Assert-Match $workflow '^name:\s+\S+' "$workflowPath is missing a workflow name."
     Assert-Match $workflow '^on:' "$workflowPath is missing triggers."
     Assert-Match $workflow '^jobs:' "$workflowPath is missing jobs."
-    Assert-Match $workflow 'actions/checkout@v4' "$workflowPath must use checkout."
-    Assert-Match $workflow 'actions/setup-java@v4' "$workflowPath must provision Java."
+    Assert-Match $workflow 'actions/checkout@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+' "$workflowPath must use immutable checkout."
+    Assert-Match $workflow 'actions/setup-java@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+' "$workflowPath must provision Java from an immutable action."
     Assert-Match $workflow 'java-version:\s*[''"]?21' "$workflowPath must use Java 21."
     Assert-True (-not [regex]::IsMatch($workflow, '(?i)\b(?:retry|rerun|Start-Sleep|WaitForTimeout)\b')) "$workflowPath enables retry or fixed sleep."
+    $externalUses = @($workflow -split "`r?`n" | Where-Object { $_ -match '^\s*uses:\s+(?!\./)' })
+    Assert-True ($externalUses.Count -gt 0) "$workflowPath has no external actions."
+    foreach ($usesLine in $externalUses) {
+        Assert-Match $usesLine '^\s*uses:\s+[^@\s]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+\s*$' `
+            "$workflowPath contains a mutable or uncommented external action: $usesLine"
+    }
     $uploads = @([regex]::Matches($workflow, '(?ms)^\s{6}- name: Upload.*?(?=^\s{6}- name:|\z)') |
-        Where-Object { $_.Value -match 'uses:\s+actions/upload-artifact@v4' })
+        Where-Object { $_.Value -match 'uses:\s+actions/upload-artifact@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+' })
     Assert-True ($uploads.Count -gt 0) "$workflowPath has no artifact uploads."
     foreach ($upload in $uploads) {
         $body = $upload.Value
@@ -162,8 +226,8 @@ $prWorkflow = Get-Content -Raw $prWorkflowPath
 Assert-Match $prWorkflow 'contract:[\s\S]*?timeout-minutes:\s+10' 'L0 timeout must be 10 minutes.'
 Assert-Match $prWorkflow 'api-smoke:[\s\S]*?needs:\s+contract[\s\S]*?timeout-minutes:\s+10' 'L1 must follow L0 with a 10-minute timeout.'
 Assert-Match $prWorkflow 'chromium-e2e:[\s\S]*?needs:\s+api-smoke[\s\S]*?timeout-minutes:\s+15' 'L2 must follow L1 with a 15-minute timeout.'
-Assert-Match $prWorkflow 'pnpm/action-setup@v4' 'L2 must install pinned pnpm.'
-Assert-Match $prWorkflow 'actions/setup-node@v4' 'L2 must provision Node.'
+Assert-Match $prWorkflow 'pnpm/action-setup@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+' 'L2 must install immutable pnpm setup.'
+Assert-Match $prWorkflow 'actions/setup-node@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+' 'L2 must provision Node from an immutable action.'
 Assert-Match $prWorkflow 'node-version:\s*[''"]?22' 'L2 must use Node 22.'
 Assert-Match $prWorkflow 'playwright install --with-deps chromium' 'PR gate must install Chromium.'
 Assert-Match $prWorkflow '-QuarantineMode MainChain' 'PR jobs must exclude valid quarantine records from main-chain results.'
@@ -196,6 +260,8 @@ Assert-True (-not $nightlyWorkflow.Contains('Get-Content -Raw docs/quarantine.ya
     'Nightly must not label the unvalidated source quarantine file as validated.'
 Assert-Match $nightlyWorkflow 'playwright install --with-deps chromium firefox' 'Nightly must install both required browsers.'
 Assert-Match $nightlyWorkflow "--project=firefox[\s\S]*?--grep-invert[\s\S]*?--project=firefox[\s\S]*?--grep[\s\S]*?--no-deps" 'Nightly must run ordinary Firefox journeys and isolated E10 exactly once.'
+Assert-Match $nightlyWorkflow 'junit-results\.ps1' 'Nightly Firefox must use the shared JUnit outcome validator.'
+Assert-Match $nightlyWorkflow 'Assert-AllCasesPassed[\s\S]*?nightly Firefox' 'Nightly Firefox must reject skipped, failed, or errored testcase records.'
 Assert-True (-not [regex]::IsMatch($nightlyWorkflow, '(?i)20-run|stability\.ps1')) 'Nightly must not claim the separately executed 20-run qualification.'
 
 Assert-True (Test-Path -LiteralPath $preflightPath) 'Missing quality-gate artifact preflight script.'
@@ -216,6 +282,35 @@ try {
         'A summary file must not mask missing L0 OpenAPI evidence.'
 } finally {
     Remove-Item -LiteralPath $summaryOnlyRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$collectionMarkerRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-gate-collection-marker-$([Guid]::NewGuid().ToString('N'))"
+try {
+    foreach ($relativePath in @(
+            'api-tests/build/test-results/test/result.xml',
+            'artifacts/quality-gate/L0/live-openapi.json',
+            'artifacts/quality-gate/L0/openapi-findings.json',
+            'artifacts/quality-gate/L0/counts.json',
+            'artifacts/quality-gate/L0/quarantine.json',
+            'artifacts/quality-gate/L0/quarantine.yaml',
+            'artifacts/quality-gate/summary.jsonl',
+            'artifacts/quality-gate/L0/environment/docker-ps.txt',
+            'artifacts/quality-gate/L0/environment/halo.log',
+            'artifacts/quality-gate/L0/environment/postgres.log',
+            'artifacts/quality-gate/L0/environment/health.json')) {
+        $path = Join-Path $collectionMarkerRoot $relativePath
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+        Set-Content -LiteralPath $path -Value 'valid'
+    }
+    $completeL0 = @(Get-MissingQualityGateArtifacts -RequestedLayer L0 -RepositoryRoot $collectionMarkerRoot)
+    Assert-True ($completeL0.Count -eq 0) "Complete L0 fixture was unexpectedly rejected: $($completeL0 -join ', ')"
+    $markerRelativePath = 'artifacts/quality-gate/L0/environment/COLLECTION_FAILED.txt'
+    Set-Content -LiteralPath (Join-Path $collectionMarkerRoot $markerRelativePath) -Value ''
+    $blockedL0 = @(Get-MissingQualityGateArtifacts -RequestedLayer L0 -RepositoryRoot $collectionMarkerRoot)
+    Assert-True ($blockedL0 -contains "$markerRelativePath (evidence collection failed)") `
+        'Preflight must reject an evidence-collection marker even when it is empty and all positive artifacts exist.'
+} finally {
+    Remove-Item -LiteralPath $collectionMarkerRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $failedL2Root = Join-Path ([IO.Path]::GetTempPath()) "halo-gate-failed-l2-$([Guid]::NewGuid().ToString('N'))"

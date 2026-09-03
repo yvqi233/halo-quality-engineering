@@ -19,12 +19,15 @@ function New-Fixture {
     Write-Text $excludeFile ''
     & git -C $root config core.excludesFile $excludeFile
     $sha = '0123456789012345678901234567890123456789'; $digest = 'halohub/halo@sha256:0123456789012345678901234567890123456789012345678901234567890123'
-    Write-Text "$root/artifacts/stability/runs.jsonl" "{`"sequence`":1,`"commit`":`"$sha`",`"haloImage`":`"$digest`",`"result`":`"PASS`",`"durationSeconds`":1,`"failureKind`":`"NONE`"}`n"
-    Write-Text "$root/evidence/raw/quality-gate/summary.jsonl" "{`"layer`":`"L0`",`"result`":`"PASS`",`"durationSeconds`":1}`n{`"layer`":`"L1`",`"result`":`"PASS`",`"durationSeconds`":1}`n{`"layer`":`"L2`",`"result`":`"PASS`",`"durationSeconds`":1}`n"
+    $stabilityLines = @(1..20 | ForEach-Object {
+        "{`"sequence`":$_,`"startedAt`":`"2026-09-01T00:00:$($_.ToString('00'))Z`",`"commit`":`"$sha`",`"haloImage`":`"$digest`",`"result`":`"PASS`",`"durationSeconds`":1,`"failureKind`":`"NONE`"}"
+    })
+    Write-Text "$root/artifacts/stability/runs.jsonl" (($stabilityLines -join "`n") + "`n")
+    Write-Text "$root/evidence/raw/quality-gate/summary.jsonl" "{`"layer`":`"L0`",`"result`":`"PASS`",`"durationSeconds`":1,`"failureKind`":`"NONE`",`"artifactName`":`"contract`"}`n{`"layer`":`"L1`",`"result`":`"PASS`",`"durationSeconds`":1,`"failureKind`":`"NONE`",`"artifactName`":`"api-smoke`"}`n{`"layer`":`"L2`",`"result`":`"PASS`",`"durationSeconds`":1,`"failureKind`":`"NONE`",`"artifactName`":`"chromium-e2e`"}`n"
     Write-Text "$root/evidence/raw/quality-gate/L0-counts.json" '{}'; Write-Text "$root/evidence/raw/quality-gate/L1-counts.json" '{}'; Write-Text "$root/evidence/raw/quality-gate/L2-counts.json" '{"ordinaryJourneys":0,"expiryJourneys":1,"totalJourneys":1}'
     Write-Text "$root/evidence/raw/quality-gate/L2-phases.json" '{"schemaVersion":1,"ordinary":{"environment":{"attempted":true,"completed":true,"result":"PASS"},"playwright":{"attempted":true,"completed":true,"result":"PASS"}},"expiry":{"environment":{"attempted":true,"completed":true,"result":"PASS"},"playwright":{"attempted":true,"completed":true,"result":"PASS"}}}'
     Write-Text "$root/evidence/raw/firefox/ordinary.xml" '<testsuites tests="11" failures="0" errors="0" skipped="0" />'; Write-Text "$root/evidence/raw/firefox/expiry.xml" '<testsuites tests="1" failures="0" errors="0" skipped="0" />'
-    $facts = "{`"stability`":{`"testedCommit`":`"$sha`",`"consecutivePassNoneRuns`":1,`"minimumDurationSeconds`":1,`"maximumDurationSeconds`":1,`"averageDurationSeconds`":1},`"fullGate`":{`"layers`": [{`"layer`":`"L0`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L1`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L2`",`"result`":`"PASS`",`"durationSeconds`":1}]},`"firefox`":{`"ordinaryPassed`":11,`"ordinaryExpected`":11,`"isolatedExpiryPassed`":1,`"isolatedExpiryExpected`":1,`"userJourneys`":1}}"
+    $facts = "{`"stability`":{`"testedCommit`":`"$sha`",`"consecutivePassNoneRuns`":20,`"minimumDurationSeconds`":1,`"maximumDurationSeconds`":1,`"averageDurationSeconds`":1},`"fullGate`":{`"layers`": [{`"layer`":`"L0`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L1`",`"result`":`"PASS`",`"durationSeconds`":1},{`"layer`":`"L2`",`"result`":`"PASS`",`"durationSeconds`":1}]},`"firefox`":{`"ordinaryPassed`":11,`"ordinaryExpected`":11,`"isolatedExpiryPassed`":1,`"isolatedExpiryExpected`":1,`"userJourneys`":1}}"
     $prov = '{"stabilityRecord":"artifacts/stability/runs.jsonl","gateSummary":"evidence/raw/quality-gate/summary.jsonl","journeyCounts":"evidence/raw/quality-gate/L2-counts.json","gatePhases":"evidence/raw/quality-gate/L2-phases.json","firefoxOrdinaryJunit":"evidence/raw/firefox/ordinary.xml","firefoxExpiryJunit":"evidence/raw/firefox/expiry.xml"}'
     Write-Text "$root/evidence/qualification-v1.json" "{`"schemaVersion`":1,`"facts`":$facts,`"provenance`":$prov}"
     $readme = @(
@@ -54,7 +57,7 @@ function Invoke-Verifier { param([string]$Root,[string[]]$AdditionalVerifierArgu
     return [pscustomobject]@{ exitCode = $exitCode; output = $output }
 }
 function Invoke-Case { param([string]$Name,[string]$Expected,[scriptblock]$Mutate,[string[]]$AdditionalVerifierArguments = @())
-    $root=New-Fixture; try { & $Mutate $root; & git -C $root add .; $result=Invoke-Verifier -Root $root -AdditionalVerifierArguments $AdditionalVerifierArguments; Assert-True ($result.exitCode -ne 0) "$Name unexpectedly passed"; Assert-True (($result.output -join "`n") -match [regex]::Escape($Expected)) "$Name missing diagnostic $Expected; output=$($result.output -join ' | ')" } finally { Remove-Item $root -Recurse -Force }
+    $root=New-Fixture; try { & $Mutate $root; & git -C $root add .; $result=Invoke-Verifier -Root $root -AdditionalVerifierArguments $AdditionalVerifierArguments; Assert-True ($result.exitCode -ne 0) "$Name unexpectedly passed"; $normalizedOutput = ($result.output -join "`n") -replace '\s', ''; $normalizedExpected = $Expected -replace '\s', ''; Assert-True ($normalizedOutput -match [regex]::Escape($normalizedExpected)) "$Name missing diagnostic $Expected; output=$($result.output -join ' | ')" } finally { Remove-Item $root -Recurse -Force }
 }
 
 function Test-PartialJunitRegression {
@@ -172,11 +175,78 @@ if ($Regression) {
 }
 
 Assert-True (Test-Path $verifier) 'verifier missing'
-$root=New-Fixture; try { $result=Invoke-Verifier -Root $root; Assert-True ($result.exitCode -eq 0) 'valid fixture failed'; Write-Text "$root/api-tests/bin/leak.txt" ('ghp_'+'abcdefghijklmnopqrstuvwxyz0123456789'); $result=Invoke-Verifier -Root $root; Assert-True ($result.exitCode -eq 0) 'untracked bin contaminated verifier' } finally { Remove-Item $root -Recurse -Force }
+$root=New-Fixture; try { $result=Invoke-Verifier -Root $root; Assert-True ($result.exitCode -eq 0) "valid fixture failed: $($result.output -join ' | ')"; Write-Text "$root/api-tests/bin/leak.txt" ('ghp_'+'abcdefghijklmnopqrstuvwxyz0123456789'); $result=Invoke-Verifier -Root $root; Assert-True ($result.exitCode -eq 0) "untracked bin contaminated verifier: $($result.output -join ' | ')" } finally { Remove-Item $root -Recurse -Force }
 Invoke-Case 'ipv4' 'disallowed IPv4' { param($r) Write-Text "$r/docs/x.md" ('10.' + '20.30.40') }
 Invoke-Case 'host' 'private-host name' { param($r) Write-Text "$r/docs/x.md" ('halo.'+'internal') }
 Invoke-Case 'auth state' 'Tracked storageState' { param($r) Write-Text "$r/e2e/.auth/admin.json" '{}' }
 Invoke-Case 'claim' 'README qualification claims' { param($r) (Get-Content -Raw "$r/README.md").Replace('"averageDurationSeconds":1','"averageDurationSeconds":9') | Set-Content "$r/README.md" }
+Invoke-Case 'typed scalar claim' 'README qualification claims do not exactly match' {
+    param($r)
+    (Get-Content -Raw "$r/README.md").Replace('"consecutivePassNoneRuns":20','"consecutivePassNoneRuns":"20"') |
+        Set-Content "$r/README.md"
+}
+Invoke-Case 'boolean stability duration' 'stability duration is invalid' {
+    param($r)
+    $path = "$r/artifacts/stability/runs.jsonl"
+    Write-Text $path ((Get-Content -Raw $path).Replace('"durationSeconds":1', '"durationSeconds":true'))
+}
+Invoke-Case 'boolean stability outcomes' 'stability result and failureKind must be strings' {
+    param($r)
+    $path = "$r/artifacts/stability/runs.jsonl"
+    Write-Text $path ((Get-Content -Raw $path).
+        Replace('"result":"PASS","durationSeconds":1,"failureKind":"NONE"', '"result":true,"durationSeconds":1,"failureKind":true'))
+}
+Invoke-Case 'boolean gate duration' 'gate summary must use the exact schema' {
+    param($r)
+    $gatePath = "$r/evidence/raw/quality-gate/summary.jsonl"
+    Write-Text $gatePath ((Get-Content -Raw $gatePath).Replace('"durationSeconds":1', '"durationSeconds":true'))
+    foreach ($factsPath in @("$r/evidence/qualification-v1.json", "$r/README.md")) {
+        (Get-Content -Raw $factsPath).Replace('"durationSeconds":1', '"durationSeconds":true') |
+            Set-Content $factsPath
+    }
+}
+Invoke-Case 'boolean gate outcomes' 'gate summary must use the exact schema' {
+    param($r)
+    $gatePath = "$r/evidence/raw/quality-gate/summary.jsonl"
+    Write-Text $gatePath ((Get-Content -Raw $gatePath).Replace('"result":"PASS"', '"result":true'))
+    foreach ($factsPath in @("$r/evidence/qualification-v1.json", "$r/README.md")) {
+        (Get-Content -Raw $factsPath).Replace('"result":"PASS"', '"result":true') |
+            Set-Content $factsPath
+    }
+}
+Invoke-Case 'nineteen stability rows' 'exactly sequences 1 through 20' {
+    param($r)
+    $path = "$r/artifacts/stability/runs.jsonl"
+    [IO.File]::WriteAllLines($path, @((Get-Content $path) | Select-Object -First 19), [Text.UTF8Encoding]::new($false))
+    foreach ($factsPath in @("$r/evidence/qualification-v1.json", "$r/README.md")) {
+        (Get-Content -Raw $factsPath).Replace('"consecutivePassNoneRuns":20','"consecutivePassNoneRuns":19') |
+            Set-Content $factsPath
+    }
+}
+Invoke-Case 'stability sequence gap' 'exactly sequences 1 through 20' {
+    param($r)
+    $path = "$r/artifacts/stability/runs.jsonl"
+    Write-Text $path ((Get-Content -Raw $path).Replace('"sequence":10,','"sequence":99,'))
+}
+Invoke-Case 'mixed stability commit' 'one commit and one image' {
+    param($r)
+    $path = "$r/artifacts/stability/runs.jsonl"
+    $lines = @(Get-Content $path)
+    $lines[9] = $lines[9].Replace('0123456789012345678901234567890123456789','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    [IO.File]::WriteAllLines($path, $lines, [Text.UTF8Encoding]::new($false))
+}
+Invoke-Case 'mixed stability image' 'one commit and one image' {
+    param($r)
+    $path = "$r/artifacts/stability/runs.jsonl"
+    $lines = @(Get-Content $path)
+    $lines[9] = $lines[9].Replace(('sha256:' + ('0123456789' * 6) + '0123'), ('sha256:' + ('b' * 64)))
+    [IO.File]::WriteAllLines($path, $lines, [Text.UTF8Encoding]::new($false))
+}
+Invoke-Case 'stability schema drift' 'exact seven-field schema' {
+    param($r)
+    $path = "$r/artifacts/stability/runs.jsonl"
+    Write-Text $path ((Get-Content -Raw $path).Replace('"failureKind":"NONE"}', '"failureKind":"NONE","attempt":1}'))
+}
 Invoke-Case 'prose' 'documented boilerplate' { param($r) Add-Content "$r/README.md" 'the suite completed successfully after twelve runs' }
 Invoke-Case 'local link' 'README qualification evidence' { param($r) (Get-Content -Raw "$r/README.md").Replace('evidence/qualification-v1.json","facts','evidence/missing.json","facts') | Set-Content "$r/README.md" }
 Invoke-Case 'lifecycle' 'lifecycleStatus must be SUBMITTED' { param($r) (Get-Content -Raw "$r/docs/upstream-contributions.md").Replace('"lifecycleStatus":"SUBMITTED"','"lifecycleStatus":"MERGED"') | Set-Content "$r/docs/upstream-contributions.md" }

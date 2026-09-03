@@ -7,6 +7,7 @@ $fakeDocker = Join-Path $testRoot 'docker.cmd'
 $fakeDockerScript = Join-Path $testRoot 'fake-docker.ps1'
 $originalDockerCli = $env:DOCKER_CLI
 $originalPath = $env:PATH
+$originalFakeDockerFailure = $env:HALO_QE_FAKE_DOCKER_FAIL
 
 function Assert-Contains {
     param([string]$Text, [string]$Expected)
@@ -39,9 +40,7 @@ function Assert-Match {
 function Invoke-CollectorHarness {
     param([string]$ArtifactRoot)
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $collector `
-        -ArtifactRoot $ArtifactRoot -HealthUri 'http://127.0.0.1:1/health' `
-        -ProbeInput @'
+    $probeInput = @'
 probe-auth-before Authorization: Basic probe~basic probe-auth-after
 probe-bearer-before Bearer probe~bearer probe-bearer-after
 probe-cookie-before
@@ -65,12 +64,40 @@ probe-local-before halo-qe-local probe-local-after
 {"before":"probe-token-before","token":"probe-token-value","after":"probe-token-after"}
 {"before":"probe-storage-before","storageState":"probe-storage-value","after":"probe-storage-after"}
 '@
-    if ($LASTEXITCODE -ne 0) { throw "Collector harness failed with exit $LASTEXITCODE." }
+    $savedErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $collector `
+            -ArtifactRoot $ArtifactRoot -HealthUri 'http://127.0.0.1:1/health' `
+            -ProbeInput $probeInput 2>&1)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+    return [pscustomobject]@{ exitCode = $exitCode; output = $output -join "`n" }
 }
 
 try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
     Set-Content -LiteralPath $fakeDockerScript -Encoding utf8 -Value @'
+if ($env:HALO_QE_FAKE_DOCKER_FAIL -eq '1') {
+    $command = $args -join ' '
+    if ($command -match ' ps --format json$') {
+        Write-Output 'ps-failure-before Authorization: Bearer ps~secret ps-failure-after'
+        exit 41
+    }
+    if ($command -match ' logs --no-color halo$') {
+        Write-Output 'halo-failure-before'
+        Write-Output 'Cookie: halo~secret'
+        Write-Output 'halo-failure-after'
+        exit 42
+    }
+    if ($command -match ' logs --no-color postgres$') {
+        Write-Output '{"before":"postgres-failure-before","password":"postgres~secret","after":"postgres-failure-after"}'
+        exit 43
+    }
+    throw "Unexpected fake Docker command: $command"
+}
 Write-Output 'auth-before Authorization: Bearer abc~secret auth-after'
 Write-Output 'basic-before Basic standalone~credential basic-after'
 Write-Output 'bearer-before Bearer standalone~token bearer-after'
@@ -103,12 +130,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0fake-docker.ps1" %
 
     $env:DOCKER_CLI = $fakeDocker
     $environmentArtifacts = Join-Path $testRoot 'from-env'
-    Invoke-CollectorHarness $environmentArtifacts
+    $environmentResult = Invoke-CollectorHarness $environmentArtifacts
+    if ($environmentResult.exitCode -ne 0) { throw "Collector harness failed with exit $($environmentResult.exitCode)." }
 
     Remove-Item Env:DOCKER_CLI
     $env:PATH = "$testRoot;$originalPath"
     $pathArtifacts = Join-Path $testRoot 'from-path'
-    Invoke-CollectorHarness $pathArtifacts
+    $pathResult = Invoke-CollectorHarness $pathArtifacts
+    if ($pathResult.exitCode -ne 0) { throw "PATH collector harness failed with exit $($pathResult.exitCode)." }
 
     $evidence = Get-ChildItem -LiteralPath $environmentArtifacts -File | ForEach-Object {
         Get-Content -LiteralPath $_.FullName -Raw -Encoding utf8
@@ -166,9 +195,55 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0fake-docker.ps1" %
     if (-not (Test-Path -LiteralPath (Join-Path $pathArtifacts 'docker-ps.txt'))) {
         throw 'PATH Docker fallback did not produce evidence.'
     }
+
+    $env:DOCKER_CLI = $fakeDocker
+    $env:HALO_QE_FAKE_DOCKER_FAIL = '1'
+    $failureArtifacts = Join-Path $testRoot 'from-failures'
+    $failureResult = Invoke-CollectorHarness $failureArtifacts
+    if ($failureResult.exitCode -eq 0) { throw 'Failed fake Compose diagnostics unexpectedly exited zero.' }
+    Assert-Contains $failureResult.output 'TEST_TOOL'
+    foreach ($exitCode in @(41, 42, 43)) { Assert-Contains $failureResult.output "exit $exitCode" }
+
+    $failureFiles = @('docker-ps.txt', 'halo.log', 'postgres.log', 'health.json', 'COLLECTION_FAILED.txt')
+    foreach ($name in $failureFiles) {
+        $path = Join-Path $failureArtifacts $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+            throw "Failed evidence collection did not retain nonempty $name."
+        }
+    }
+    $dockerFailure = Get-Content -Raw -LiteralPath (Join-Path $failureArtifacts 'docker-ps.txt') -Encoding utf8
+    $haloFailure = Get-Content -Raw -LiteralPath (Join-Path $failureArtifacts 'halo.log') -Encoding utf8
+    $postgresFailure = Get-Content -Raw -LiteralPath (Join-Path $failureArtifacts 'postgres.log') -Encoding utf8
+    $marker = Get-Content -Raw -LiteralPath (Join-Path $failureArtifacts 'COLLECTION_FAILED.txt') -Encoding utf8
+    foreach ($expectation in @(
+            @($dockerFailure, 'ps-failure-before'), @($dockerFailure, 'ps-failure-after'),
+            @($dockerFailure, 'Docker Compose command failed (exit 41): ps --format json'),
+            @($haloFailure, 'halo-failure-before'), @($haloFailure, 'halo-failure-after'),
+            @($haloFailure, 'Docker Compose command failed (exit 42): logs --no-color halo'),
+            @($postgresFailure, 'postgres-failure-before'), @($postgresFailure, 'postgres-failure-after'),
+            @($postgresFailure, 'Docker Compose command failed (exit 43): logs --no-color postgres'))) {
+        Assert-Contains $expectation[0] $expectation[1]
+    }
+    Assert-Contains $marker 'failureKind=TEST_TOOL'
+    Assert-Contains $marker 'failureCount=3'
+    Assert-Contains $marker 'docker-ps.txt|exit=41|command=ps --format json'
+    Assert-Contains $marker 'halo.log|exit=42|command=logs --no-color halo'
+    Assert-Contains $marker 'postgres.log|exit=43|command=logs --no-color postgres'
+    $allFailureEvidence = "$dockerFailure`n$haloFailure`n$postgresFailure`n$marker`n$($failureResult.output)"
+    foreach ($secret in @('ps~secret', 'halo~secret', 'postgres~secret')) {
+        Assert-NotContains $allFailureEvidence $secret
+    }
+
+    Remove-Item Env:HALO_QE_FAKE_DOCKER_FAIL
+    $recoveryResult = Invoke-CollectorHarness $failureArtifacts
+    if ($recoveryResult.exitCode -ne 0) { throw "Successful collector reuse failed with exit $($recoveryResult.exitCode)." }
+    if (Test-Path -LiteralPath (Join-Path $failureArtifacts 'COLLECTION_FAILED.txt')) {
+        throw 'Successful collector reuse retained a stale failure marker.'
+    }
     Write-Output 'collect-evidence hermetic tests passed'
 } finally {
     if ($null -eq $originalDockerCli) { Remove-Item Env:DOCKER_CLI -ErrorAction SilentlyContinue } else { $env:DOCKER_CLI = $originalDockerCli }
+    if ($null -eq $originalFakeDockerFailure) { Remove-Item Env:HALO_QE_FAKE_DOCKER_FAIL -ErrorAction SilentlyContinue } else { $env:HALO_QE_FAKE_DOCKER_FAIL = $originalFakeDockerFailure }
     $env:PATH = $originalPath
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -96,6 +96,8 @@ try {
         'The child exit code must be captured before gate output is rendered.'
     Assert-True (-not [regex]::IsMatch($runner, '(?i)\b(?:retry|rerun)\b')) `
         'The stability runner must not retry or rerun a failed sequence.'
+    Assert-Match $runner 'status.*--untracked-files=no' `
+        'The stability runner must reject tracked changes while ignoring unrelated untracked files.'
 
     New-Item -ItemType Directory -Force -Path (Join-Path $testRoot 'environment') | Out-Null
     [IO.File]::WriteAllText(
@@ -143,6 +145,66 @@ if ($env:HALO_STABILITY_FAKE_MODE -eq 'IncompleteSummary') {
     exit 0
 }
 
+if ($env:HALO_STABILITY_FAKE_MODE -eq 'ExtraFieldSummary') {
+    $lines = @(
+        '{"layer":"L0","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"contract","attempt":1}',
+        '{"layer":"L1","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"api-smoke"}',
+        '{"layer":"L2","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"chromium-e2e"}'
+    )
+    [IO.File]::WriteAllLines($summaryPath, $lines, [Text.UTF8Encoding]::new($false))
+    exit 0
+}
+
+if ($env:HALO_STABILITY_FAKE_MODE -eq 'WrongLayerSummary') {
+    $lines = @(
+        '{"layer":"L0","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"contract"}',
+        '{"layer":"L2","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"chromium-e2e"}',
+        '{"layer":"L1","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"api-smoke"}'
+    )
+    [IO.File]::WriteAllLines($summaryPath, $lines, [Text.UTF8Encoding]::new($false))
+    exit 0
+}
+
+if ($env:HALO_STABILITY_FAKE_MODE -eq 'NonPassOutcomeSummary') {
+    $lines = @(
+        '{"layer":"L0","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"contract"}',
+        '{"layer":"L1","result":"SKIPPED","durationSeconds":1,"failureKind":"NONE","artifactName":"api-smoke"}',
+        '{"layer":"L2","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"chromium-e2e"}'
+    )
+    [IO.File]::WriteAllLines($summaryPath, $lines, [Text.UTF8Encoding]::new($false))
+    exit 0
+}
+
+if ($env:HALO_STABILITY_FAKE_MODE -eq 'InconsistentKindSummary') {
+    $lines = @(
+        '{"layer":"L0","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"contract"}',
+        '{"layer":"L1","result":"PASS","durationSeconds":1,"failureKind":"PRODUCT","artifactName":"api-smoke"}',
+        '{"layer":"L2","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"chromium-e2e"}'
+    )
+    [IO.File]::WriteAllLines($summaryPath, $lines, [Text.UTF8Encoding]::new($false))
+    exit 0
+}
+
+if ($env:HALO_STABILITY_FAKE_MODE -eq 'WrongArtifactSummary') {
+    $lines = @(
+        '{"layer":"L0","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"wrong"}',
+        '{"layer":"L1","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"api-smoke"}',
+        '{"layer":"L2","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"chromium-e2e"}'
+    )
+    [IO.File]::WriteAllLines($summaryPath, $lines, [Text.UTF8Encoding]::new($false))
+    exit 0
+}
+
+if ($env:HALO_STABILITY_FAKE_MODE -eq 'BooleanDurationSummary') {
+    $lines = @(
+        '{"layer":"L0","result":"PASS","durationSeconds":true,"failureKind":"NONE","artifactName":"contract"}',
+        '{"layer":"L1","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"api-smoke"}',
+        '{"layer":"L2","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"chromium-e2e"}'
+    )
+    [IO.File]::WriteAllLines($summaryPath, $lines, [Text.UTF8Encoding]::new($false))
+    exit 0
+}
+
 if ($count -eq 1) {
     $lines = @(
         '{"layer":"L0","result":"PASS","durationSeconds":1,"failureKind":"NONE","artifactName":"contract"}',
@@ -161,12 +223,24 @@ $lines = @(
 exit 1
 '@
     [IO.File]::WriteAllText($fakeGatePath, $fakeGate, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $testRoot 'tracked-sentinel.txt'), 'clean', [Text.UTF8Encoding]::new($false))
     [void](Invoke-TestGit -Arguments @('init', '--quiet'))
+    [void](Invoke-TestGit -Arguments @('add', 'tracked-sentinel.txt'))
     [void](Invoke-TestGit -Arguments @(
         '-c', 'user.name=Halo Stability Test',
         '-c', 'user.email=halo-stability@example.invalid',
-        'commit', '--allow-empty', '--quiet', '-m', 'initialize stability fixture'))
+        'commit', '--quiet', '-m', 'initialize stability fixture'))
     $commit = Invoke-TestGit -Arguments @('rev-parse', 'HEAD')
+
+    Reset-Fixture
+    Add-Content -LiteralPath (Join-Path $testRoot 'tracked-sentinel.txt') -Value 'dirty'
+    $dirtyRun = Invoke-TestRunner -Runs 3 -Mode 'FailSecond'
+    Assert-True ($dirtyRun.exitCode -ne 0) 'A dirty tracked tree must block qualification.'
+    Assert-True (-not (Test-Path -LiteralPath $counterPath)) `
+        'A dirty tracked tree must be rejected before the first gate invocation.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $testRoot 'artifacts/stability/runs.jsonl'))) `
+        'A dirty tracked tree must not create a qualification record.'
+    [IO.File]::WriteAllText((Join-Path $testRoot 'tracked-sentinel.txt'), 'clean', [Text.UTF8Encoding]::new($false))
 
     $failureRun = Invoke-TestRunner -Runs 5 -Mode 'FailSecond'
     Assert-True ($failureRun.exitCode -eq 1) 'A failed gate must fail the stability process.'
@@ -190,7 +264,10 @@ exit 1
     Assert-True (Test-Path (Join-Path $failureRoots[0].FullName 'runs.jsonl')) `
         'The failed run record must be preserved with its evidence.'
 
-    foreach ($mode in @('IncompleteSummary', 'MissingSummary', 'MalformedSummary')) {
+    foreach ($mode in @(
+            'IncompleteSummary', 'MissingSummary', 'MalformedSummary', 'ExtraFieldSummary',
+            'WrongLayerSummary', 'NonPassOutcomeSummary', 'InconsistentKindSummary', 'WrongArtifactSummary',
+            'BooleanDurationSummary')) {
         Assert-RejectedSummary -Mode $mode
     }
 

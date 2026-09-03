@@ -114,19 +114,27 @@ function Invoke-ComposeDiagnostic {
 
     $previousConsoleEncoding = [Console]::OutputEncoding
     $previousOutputEncoding = $OutputEncoding
+    $output = ''
+    $exitCode = -1
     try {
         $utf8 = [System.Text.UTF8Encoding]::new($false)
         [Console]::OutputEncoding = $utf8
         $OutputEncoding = $utf8
-        $output = & $DOCKER_CLI compose --project-name halo-qe --env-file $lockFile --file $composeFile @Arguments 2>&1 | Out-String
+        try {
+            $output = & $DOCKER_CLI compose --project-name halo-qe --env-file $lockFile --file $composeFile @Arguments 2>&1 | Out-String
+            $exitCode = [int]$LASTEXITCODE
+        } catch {
+            $output = $_ | Out-String
+        }
     } finally {
         [Console]::OutputEncoding = $previousConsoleEncoding
         $OutputEncoding = $previousOutputEncoding
     }
-    if ($LASTEXITCODE -ne 0) {
-        return "Docker Compose command failed (exit $LASTEXITCODE): $($Arguments -join ' ')`n$output"
+    return [pscustomobject]@{
+        arguments = @($Arguments)
+        exitCode = $exitCode
+        output = $output
     }
-    return $output
 }
 
 function Get-HealthDiagnostic {
@@ -155,12 +163,41 @@ if (-not (Test-Path -LiteralPath $composeFile) -or -not (Test-Path -LiteralPath 
 }
 
 New-Item -ItemType Directory -Force -Path $ArtifactRoot | Out-Null
-Write-RedactedText (Join-Path $ArtifactRoot 'docker-ps.txt') (Invoke-ComposeDiagnostic ps --format json)
-Write-RedactedText (Join-Path $ArtifactRoot 'halo.log') (Invoke-ComposeDiagnostic logs --no-color halo)
-Write-RedactedText (Join-Path $ArtifactRoot 'postgres.log') (Invoke-ComposeDiagnostic logs --no-color postgres)
+$failureMarker = Join-Path $ArtifactRoot 'COLLECTION_FAILED.txt'
+Remove-Item -LiteralPath $failureMarker -Force -ErrorAction SilentlyContinue
+$failures = [Collections.Generic.List[object]]::new()
+$diagnostics = @(
+    [pscustomobject]@{ artifact = 'docker-ps.txt'; arguments = @('ps', '--format', 'json') },
+    [pscustomobject]@{ artifact = 'halo.log'; arguments = @('logs', '--no-color', 'halo') },
+    [pscustomobject]@{ artifact = 'postgres.log'; arguments = @('logs', '--no-color', 'postgres') }
+)
+foreach ($diagnostic in $diagnostics) {
+    $commandArguments = [string[]]$diagnostic.arguments
+    $result = Invoke-ComposeDiagnostic @commandArguments
+    $text = $result.output
+    if ($result.exitCode -ne 0) {
+        $command = $result.arguments -join ' '
+        $text = "Docker Compose command failed (exit $($result.exitCode)): $command`n$($result.output)"
+        [void]$failures.Add([pscustomobject]@{
+            artifact = $diagnostic.artifact
+            command = $command
+            exitCode = $result.exitCode
+        })
+    }
+    Write-RedactedText (Join-Path $ArtifactRoot $diagnostic.artifact) $text
+}
 Set-Content -LiteralPath (Join-Path $ArtifactRoot 'health.json') -Value (Get-HealthDiagnostic) -Encoding utf8
 if ($PSBoundParameters.ContainsKey('ProbeInput')) {
     Write-RedactedText (Join-Path $ArtifactRoot 'probe.txt') $ProbeInput
+}
+
+if ($failures.Count -gt 0) {
+    $markerLines = @('failureKind=TEST_TOOL', "failureCount=$($failures.Count)") + @($failures | ForEach-Object {
+        "$($_.artifact)|exit=$($_.exitCode)|command=$($_.command)"
+    })
+    Set-Content -LiteralPath $failureMarker -Value $markerLines -Encoding utf8
+    $summary = @($failures | ForEach-Object { "$($_.artifact) (exit $($_.exitCode): $($_.command))" }) -join '; '
+    throw "TEST_TOOL: evidence collection failed for $($failures.Count) Docker Compose commands: $summary"
 }
 
 Write-Output "Redacted environment evidence written to $ArtifactRoot"

@@ -11,7 +11,7 @@ java {
 dependencies {
     testImplementation(platform("org.junit:junit-bom:5.12.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testImplementation("org.junit.platform:junit-platform-launcher")
     testImplementation("org.assertj:assertj-core:3.27.3")
     testImplementation("io.rest-assured:rest-assured:5.5.1")
     testImplementation(platform("com.fasterxml.jackson:jackson-bom:2.18.3"))
@@ -20,7 +20,15 @@ dependencies {
 }
 
 tasks.withType<Test>().configureEach {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags("classification-probe")
+    }
+    val classificationFile = layout.buildDirectory.file("failure-classification/$name.jsonl")
+    systemProperty("junit.jupiter.extensions.autodetection.enabled", "true")
+    systemProperty("qe.failureClassificationPath", classificationFile.get().asFile.absolutePath)
+    doFirst {
+        classificationFile.get().asFile.delete()
+    }
 }
 
 tasks.named<Test>("test") {
