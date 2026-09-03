@@ -57,6 +57,9 @@ Assert-Match $runner 'exit \$outcome\.exitCode\s*$' 'The final process result mu
 Assert-Match $runner 'RuntimeInformation.*IsOSPlatform' 'Command selection must not depend on an optional OS environment variable.'
 Assert-Match $runner "gradlew\.bat" 'Windows must use the Gradle batch launcher.'
 Assert-Match $runner "playwright\.cmd" 'Windows must use the Playwright command launcher.'
+$gradleIndexEntry = @(& git -C $repoRoot ls-files --stage -- gradlew)
+Assert-True ($LASTEXITCODE -eq 0) 'Unable to inspect the committed Gradle launcher mode.'
+Assert-Match ($gradleIndexEntry -join "`n") '^100755\s' 'The Unix Gradle launcher must be executable in the Git index.'
 Assert-Ordered $runner @('$output = @(& $FilePath @Arguments)', '$exitCode = $LASTEXITCODE', '$output | ForEach-Object') 'Native commands must execute outside the output pipeline.'
 $isWindowsPlatform = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows)
