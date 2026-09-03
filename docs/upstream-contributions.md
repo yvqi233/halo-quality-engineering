@@ -1,6 +1,6 @@
 # Upstream Contributions
 
-`pageState` records the current public GitHub page state. `lifecycleStatus` records contribution lifecycle independently: an open PR is `SUBMITTED`, and no record is described as merged or accepted unless its live page is merged.
+`pageState` records the current public GitHub page state. `lifecycleStatus` records contribution lifecycle independently: an open PR is `SUBMITTED`, and a PR is `MERGED` only when its live page reports it as merged.
 
 ## Contribution Purpose
 
@@ -12,7 +12,7 @@ The smallest credential-free curl locator is in [the Issue reproducer](../eviden
 
 ## Expected And Actual
 
-Expected documentation contract: state the fixed target, exact minimal action, expected interpretation, actual contribution scope, and redacted evidence location. Actual contract: the public Issue records that documentation/testability improvement, while the submitted PR supplies the single-purpose upstream change and its linked validation record.
+Expected documentation contract: state the fixed target, exact minimal action, expected interpretation, actual contribution scope, and redacted evidence location. Actual contract: the public Issue records that documentation/testability improvement, while the merged PR supplies the single-purpose upstream change and its linked validation record.
 
 ## Duplicate Search
 
@@ -20,7 +20,7 @@ Before opening the record, existing Halo Issues and PRs were searched for the sa
 
 ## PR Change And Validation
 
-PR `#10283` is tied to Issue `#10282`, has head commit `ba1f5534ce8c5fe0e09d601ddccf0cb24a018147`, and is recorded in [the PR validation record](../evidence/upstream-10283-validation.md). The public change is single-purpose. SonarCloud passed; license and CLA checks are pending.
+PR `#10283` is tied to Issue `#10282`, has final head commit `0b392fb086f37cb113406e747c81939314f39ca6` and merge commit `4e7e5850b01640515323dcd4f08a1b42ff033147`, and is recorded in [the PR validation record](../evidence/upstream-10283-validation.md). The public change is single-purpose. Its public record shows maintainer approval and merge after the requested documentation revisions; SonarCloud and Codecov also reported passing results.
 
 ## AI Disclosure
 
@@ -28,7 +28,7 @@ Substantive AI assistance was disclosed in the public PR description. Human revi
 
 ## Review And Status
 
-Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN`, not draft; lifecycle: `SUBMITTED`. On 2026-09-02, the public PR had two status-service comments, from `CLAassistant` (`User`) and `sonarqubecloud[bot]` (`Bot`), and zero GitHub review records. These public facts do not establish whether any human reviewed the change. Public CI has no run URL for this quality repository. The upstream PR validation status is SonarCloud passed with license and CLA pending; no merged or accepted status is claimed.
+Issue `#10282` current page state: `CLOSED`, lifecycle: `RESOLVED`. PR `#10283` current page state: `MERGED`, lifecycle: `MERGED`. On 2026-09-03, the public PR had five issue-comment records from `CLAassistant` (`User`), `sonarqubecloud[bot]` (`Bot`), `ruibaby` (`User`), `pkg-pr-new[bot]` (`Bot`), and `codecov[bot]` (`Bot`). It had two review records from maintainer `ruibaby` (`User`): `CHANGES_REQUESTED` on the initial head and `APPROVED` on the final head. Public CI has no run URL for this separate quality repository.
 
 ## Modification History
 
@@ -37,6 +37,8 @@ Issue `#10282` current page state: `OPEN`. PR `#10283` current page state: `OPEN
 | 2026-08-31 | Issue `#10282` created with fixed-version reproduction context | `REPORTED`, page `OPEN` |
 | 2026-08-31 | PR `#10283` submitted with disclosed AI assistance and validation summary | `SUBMITTED`, page `OPEN` |
 | 2026-09-02 | Public ledger verified against unauthenticated GitHub page/API responses | `SUBMITTED`, page `OPEN` |
+| 2026-09-03 | Maintainer requested wording changes, revisions were applied, and the maintainer approved the final head | `APPROVED`, page `OPEN` |
+| 2026-09-03 | PR `#10283` merged and linked Issue `#10282` closed as completed | PR `MERGED`; Issue `RESOLVED` |
 
 ## Schema
 
@@ -48,22 +50,28 @@ The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `
   "schemaVersion": 1,
   "purpose": "Single-purpose Halo quality/testability documentation improvement.",
   "reproductionEvidence": "evidence/upstream-10282-reproducer.md",
-  "expectedActual": "Fixed-target, redacted documentation contract and submitted upstream change.",
+  "expectedActual": "Fixed-target, redacted documentation contract and merged upstream change.",
   "duplicateSearch": "Existing public Halo Issues and PRs were searched; no duplicate was selected.",
-  "prChangeHead": "PR #10283 at ba1f5534ce8c5fe0e09d601ddccf0cb24a018147.",
-  "validation": "SonarCloud passed; license and CLA pending.",
+  "prChangeHead": "PR #10283 final head 0b392fb086f37cb113406e747c81939314f39ca6; merge commit 4e7e5850b01640515323dcd4f08a1b42ff033147.",
+  "validation": "Maintainer approval followed requested revisions; SonarCloud and Codecov reported passing results; the PR merged.",
   "aiDisclosure": "Substantive AI assistance was disclosed in the PR description.",
   "publicReviewFacts": {
-    "checkedAt": "2026-09-02",
-    "issueCommentCount": 2,
-    "reviewCount": 0,
+    "checkedAt": "2026-09-03",
+    "issueCommentCount": 5,
+    "reviewCount": 2,
     "issueComments": [
       { "actor": "CLAassistant", "actorType": "User" },
-      { "actor": "sonarqubecloud[bot]", "actorType": "Bot" }
+      { "actor": "sonarqubecloud[bot]", "actorType": "Bot" },
+      { "actor": "ruibaby", "actorType": "User" },
+      { "actor": "pkg-pr-new[bot]", "actorType": "Bot" },
+      { "actor": "codecov[bot]", "actorType": "Bot" }
     ],
-    "reviews": []
+    "reviews": [
+      { "actor": "ruibaby", "actorType": "User", "state": "CHANGES_REQUESTED" },
+      { "actor": "ruibaby", "actorType": "User", "state": "APPROVED" }
+    ]
   },
-  "modificationHistory": ["2026-08-31 Issue reported", "2026-08-31 PR submitted", "2026-09-02 public state verified"]
+  "modificationHistory": ["2026-08-31 Issue reported", "2026-08-31 PR submitted", "2026-09-02 public state verified", "2026-09-03 maintainer requested changes then approved final head", "2026-09-03 PR merged and Issue resolved"]
 }
 ```
 
@@ -75,8 +83,8 @@ The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `
     {
       "kind": "ISSUE",
       "url": "https://github.com/halo-dev/halo/issues/10282",
-      "pageState": "OPEN",
-      "lifecycleStatus": "REPORTED",
+      "pageState": "CLOSED",
+      "lifecycleStatus": "RESOLVED",
       "haloVersion": "2.26.1",
       "sourceCommit": "88c2ef14355c79a4dbd1d5c3246b3ea32836e06b",
       "evidence": "evidence/upstream-10282-reproducer.md"
@@ -84,11 +92,11 @@ The `upstream-ledger-v1` JSON block is parseable. Each record requires `kind`, `
     {
       "kind": "PR",
       "url": "https://github.com/halo-dev/halo/pull/10283",
-      "pageState": "OPEN",
-      "lifecycleStatus": "SUBMITTED",
+      "pageState": "MERGED",
+      "lifecycleStatus": "MERGED",
       "haloVersion": "2.26.1",
       "sourceCommit": "88c2ef14355c79a4dbd1d5c3246b3ea32836e06b",
-      "headCommit": "ba1f5534ce8c5fe0e09d601ddccf0cb24a018147",
+      "headCommit": "0b392fb086f37cb113406e747c81939314f39ca6",
       "evidence": "evidence/upstream-10283-validation.md"
     }
   ]

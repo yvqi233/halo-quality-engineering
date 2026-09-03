@@ -59,7 +59,7 @@ The machine-checked claim below is compared exactly with the authoritative track
   "schemaVersion": 1,
   "evidence": "evidence/qualification-v1.json",
   "facts": {
-    "stability": { "testedCommit": "04379a211124cd52f7a2d08920dd0866fe24ed55", "consecutivePassNoneRuns": 20, "minimumDurationSeconds": 163.37, "maximumDurationSeconds": 182.204, "averageDurationSeconds": 168.103 },
+    "stability": { "testedCommit": "e43b8814d4d7adcaa0f8e3bd018711f712aff125", "consecutivePassNoneRuns": 20, "minimumDurationSeconds": 179.166, "maximumDurationSeconds": 203.51, "averageDurationSeconds": 185.164 },
     "fullGate": { "layers": [{ "layer": "L0", "result": "PASS", "durationSeconds": 30.559 }, { "layer": "L1", "result": "PASS", "durationSeconds": 59.442 }, { "layer": "L2", "result": "PASS", "durationSeconds": 73.93 }] },
     "firefox": { "ordinaryPassed": 11, "ordinaryExpected": 11, "isolatedExpiryPassed": 1, "isolatedExpiryExpected": 1, "userJourneys": 10 }
   }
@@ -72,7 +72,7 @@ These are observed local qualification results, not design targets. No public CI
 
 ## Public Contributions
 
-The upstream Issue is [halo-dev/halo#10282](https://github.com/halo-dev/halo/issues/10282), whose current page state is `OPEN`. The upstream PR is [halo-dev/halo#10283](https://github.com/halo-dev/halo/pull/10283), whose current page state is `OPEN` and whose contribution lifecycle is independently recorded as `SUBMITTED`, not merged. [Contribution ledger](docs/upstream-contributions.md)
+The upstream Issue is [halo-dev/halo#10282](https://github.com/halo-dev/halo/issues/10282), whose current page state is `CLOSED` and whose lifecycle is `RESOLVED`. The upstream PR is [halo-dev/halo#10283](https://github.com/halo-dev/halo/pull/10283), whose current page state and contribution lifecycle are both `MERGED`. [Contribution ledger](docs/upstream-contributions.md)
 
 ## Non-Goals
 
