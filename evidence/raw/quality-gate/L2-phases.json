@@ -1,0 +1,27 @@
+{
+    "schemaVersion":  1,
+    "ordinary":  {
+                     "environment":  {
+                                         "attempted":  true,
+                                         "completed":  true,
+                                         "result":  "PASS"
+                                     },
+                     "playwright":  {
+                                        "attempted":  true,
+                                        "completed":  true,
+                                        "result":  "PASS"
+                                    }
+                 },
+    "expiry":  {
+                   "environment":  {
+                                       "attempted":  true,
+                                       "completed":  true,
+                                       "result":  "PASS"
+                                   },
+                   "playwright":  {
+                                      "attempted":  true,
+                                      "completed":  true,
+                                      "result":  "PASS"
+                                  }
+               }
+}

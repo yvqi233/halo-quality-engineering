@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "facts": {
+    "stability": {
+      "testedCommit": "e43b8814d4d7adcaa0f8e3bd018711f712aff125",
+      "consecutivePassNoneRuns": 20,
+      "minimumDurationSeconds": 179.166,
+      "maximumDurationSeconds": 203.51,
+      "averageDurationSeconds": 185.164
+    },
+    "fullGate": {
+      "layers": [
+        { "layer": "L0", "result": "PASS", "durationSeconds": 30.559 },
+        { "layer": "L1", "result": "PASS", "durationSeconds": 59.442 },
+        { "layer": "L2", "result": "PASS", "durationSeconds": 73.93 }
+      ]
+    },
+    "firefox": {
+      "ordinaryPassed": 11,
+      "ordinaryExpected": 11,
+      "isolatedExpiryPassed": 1,
+      "isolatedExpiryExpected": 1,
+      "userJourneys": 10
+    }
+  },
+  "provenance": {
+    "stabilityRecord": "artifacts/stability/runs.jsonl",
+    "gateSummary": "evidence/raw/quality-gate/summary.jsonl",
+    "journeyCounts": "evidence/raw/quality-gate/L2-counts.json",
+    "gatePhases": "evidence/raw/quality-gate/L2-phases.json",
+    "firefoxOrdinaryJunit": "evidence/raw/firefox/ordinary-junit.xml",
+    "firefoxExpiryJunit": "evidence/raw/firefox/expiry-junit.xml",
+    "snapshotNote": "Final sanitized raw artifact snapshot from completed local qualification; not hosted CI.",
+    "publicCiRunUrl": null,
+    "repositoryRemote": null
+  }
+}

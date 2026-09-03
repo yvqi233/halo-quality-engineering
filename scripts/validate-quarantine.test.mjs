@@ -1,0 +1,108 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { test } from 'node:test';
+import { parseQuarantine, validateQuarantine } from './validate-quarantine.mjs';
+
+const NOW = new Date('2026-09-01T00:00:00Z');
+const repositoryRoot = resolve(import.meta.dirname, '..');
+const validatorPath = join(repositoryRoot, 'scripts/validate-quarantine.mjs');
+
+const validCase = `cases:
+  - testId: api.posts.lifecycle
+    issueUrl: https://github.com/halo-dev/halo/issues/1234
+    owner: quality-engineering
+    reason: Intermittent upstream timeout under investigation
+    expiresAt: 2026-09-15T00:00:00Z
+    restoreAfterGreenRuns: 10
+`;
+
+test('accepts an empty quarantine and a complete unexpired case', () => {
+  assert.deepEqual(validateQuarantine('cases: []\n', NOW), []);
+  assert.deepEqual(validateQuarantine(validCase, NOW), []);
+  assert.equal(parseQuarantine(validCase)[0].testId, 'api.posts.lifecycle');
+});
+
+test('CLI emits validated records as JSON for gate selection', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'halo-quarantine-json-'));
+  const quarantinePath = join(directory, 'quarantine.yaml');
+  writeFileSync(quarantinePath, validCase.replace('api.posts.lifecycle', 'E10'));
+  try {
+    const run = spawnSync(process.execPath, [
+      validatorPath, '--file', quarantinePath, '--now', NOW.toISOString(), '--format', 'json'
+    ], { cwd: repositoryRoot, encoding: 'utf8' });
+    assert.equal(run.status, 0);
+    assert.deepEqual(JSON.parse(run.stdout), [{
+      testId: 'E10',
+      issueUrl: 'https://github.com/halo-dev/halo/issues/1234',
+      owner: 'quality-engineering',
+      reason: 'Intermittent upstream timeout under investigation',
+      expiresAt: '2026-09-15T00:00:00Z',
+      restoreAfterGreenRuns: '10'
+    }]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('reports each required quarantine-field, public URL, expiry, and green-run violation', () => {
+  const invalid = `cases:
+  - testId:
+    issueUrl: http://localhost/issues/1
+    owner:
+    reason:
+    expiresAt: 2026-08-31T00:00:00Z
+    restoreAfterGreenRuns: 9
+`;
+
+  assert.deepEqual(validateQuarantine(invalid, NOW), [
+    'cases[0].testId is required',
+    'cases[0].owner is required',
+    'cases[0].reason is required',
+    'cases[0].issueUrl must be a public HTTPS URL',
+    'cases[0].expiresAt is expired',
+    'cases[0].restoreAfterGreenRuns must be an integer between 10 and 20'
+  ]);
+});
+
+test('rejects a non-ISO expiry even when the other future-entry fields are valid', () => {
+  assert.deepEqual(validateQuarantine(validCase.replace('2026-09-15T00:00:00Z', '2026-09-15'), NOW), [
+    'cases[0].expiresAt must be ISO-8601'
+  ]);
+});
+
+test('rejects unmatched YAML quotes and impossible calendar dates', () => {
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', 'owner: "quality-engineering'), NOW), [
+    'line 4: malformed quoted scalar'
+  ]);
+  assert.deepEqual(validateQuarantine(validCase.replace('2026-09-15T00:00:00Z', '2026-02-30T00:00:00Z'), NOW), [
+    'cases[0].expiresAt must be ISO-8601'
+  ]);
+  assert.deepEqual(validateQuarantine(validCase.replace('2026-09-15T00:00:00Z', '2028-02-29T00:00:00+09:00'), NOW), []);
+});
+
+test('rejects unescaped interior quote delimiters and accepts escaped quoted scalars', () => {
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', 'owner: "quality"engineering"'), NOW), [
+    'line 4: malformed quoted scalar'
+  ]);
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', 'owner: "quality \\"engineering\\""'), NOW), []);
+  assert.deepEqual(validateQuarantine(validCase.replace('owner: quality-engineering', "owner: 'quality ''engineering'''"), NOW), []);
+});
+
+test('CLI exits 2 for invalid future quarantine entries', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'halo-quarantine-'));
+  const quarantinePath = join(directory, 'quarantine.yaml');
+  writeFileSync(quarantinePath, validCase.replace('restoreAfterGreenRuns: 10', 'restoreAfterGreenRuns: 21'));
+  try {
+    const run = spawnSync(process.execPath, [validatorPath, '--file', quarantinePath, '--now', NOW.toISOString()], {
+      cwd: repositoryRoot,
+      encoding: 'utf8'
+    });
+    assert.equal(run.status, 2);
+    assert.match(run.stderr, /restoreAfterGreenRuns/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

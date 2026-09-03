@@ -1,0 +1,9 @@
+{
+    "ordinaryJourneys":  9,
+    "expiryJourneys":  1,
+    "totalJourneys":  10,
+    "infrastructure":  2,
+    "quarantinedExcluded":  [
+
+                            ]
+}

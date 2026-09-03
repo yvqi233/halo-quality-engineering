@@ -1,0 +1,32 @@
+<testsuites id="" name="" tests="11" failures="0" skipped="0" errors="0" time="45.295281">
+<testsuite name="fixtures\auth.teardown.ts" timestamp="2026-09-01T09:18:21.533Z" hostname="teardown" tests="1" failures="0" skipped="0" time="0.62" errors="0">
+<testcase name="I02 teardown deletes setup users in reverse order" classname="fixtures\auth.teardown.ts" time="0.62">
+</testcase>
+</testsuite>
+<testsuite name="fixtures\auth.setup.ts" timestamp="2026-09-01T09:18:21.533Z" hostname="setup" tests="1" failures="0" skipped="0" time="2.483" errors="0">
+<testcase name="I01 setup owns and verifies canonical role states" classname="fixtures\auth.setup.ts" time="2.483">
+</testcase>
+</testsuite>
+<testsuite name="specs\auth.spec.ts" timestamp="2026-09-01T09:18:21.533Z" hostname="firefox" tests="4" failures="0" skipped="0" time="9.542" errors="0">
+<testcase name="E01 admin login reaches console" classname="specs\auth.spec.ts" time="1.592">
+</testcase>
+<testcase name="E02 wrong password remains unauthenticated" classname="specs\auth.spec.ts" time="0.524">
+</testcase>
+<testcase name="E03 author opens Posts and readonly is redirected from console" classname="specs\auth.spec.ts" time="1.882">
+</testcase>
+<testcase name="E09 admin logout invalidates the former context" classname="specs\auth.spec.ts" time="5.544">
+</testcase>
+</testsuite>
+<testsuite name="specs\posts.spec.ts" timestamp="2026-09-01T09:18:21.533Z" hostname="firefox" tests="5" failures="0" skipped="0" time="29.337" errors="0">
+<testcase name="E04 author creates a draft through the editor" classname="specs\posts.spec.ts" time="5.635">
+</testcase>
+<testcase name="E05 admin publishes an API draft through Posts" classname="specs\posts.spec.ts" time="7.656">
+</testcase>
+<testcase name="E06 API-published title is visible at exact anonymous permalink" classname="specs\posts.spec.ts" time="4.377">
+</testcase>
+<testcase name="E07 admin unpublishes and anonymous permalink ceases exposure" classname="specs\posts.spec.ts" time="7.459">
+</testcase>
+<testcase name="E08 readonly direct create is denied once and resource remains absent" classname="specs\posts.spec.ts" time="4.21">
+</testcase>
+</testsuite>
+</testsuites>
