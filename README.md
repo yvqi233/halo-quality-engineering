@@ -68,7 +68,7 @@ The machine-checked claim below is compared exactly with the authoritative track
 
 ## Qualification Boundary
 
-These are observed local qualification results, not design targets. No public CI run URL exists, and this quality repository has no remote; this repository does not claim hosted CI execution.
+The structured qualification facts above are observed local results captured before publication, not design targets or hosted-CI measurements. The repository was subsequently published, and pull request [#1](https://github.com/yvqi233/halo-quality-engineering/pull/1) completed the public [Layered quality gate run 33732942394](https://github.com/yvqi233/halo-quality-engineering/actions/runs/33732942394) with `L0 contract`, `L1 API smoke`, and `L2 Chromium E2E` all successful. That public run is separate evidence; it does not convert the 20 local stability records into CI runs.
 
 ## Public Contributions
 

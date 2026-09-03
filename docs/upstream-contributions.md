@@ -28,7 +28,7 @@ Substantive AI assistance was disclosed in the public PR description. Human revi
 
 ## Review And Status
 
-Issue `#10282` current page state: `CLOSED`, lifecycle: `RESOLVED`. PR `#10283` current page state: `MERGED`, lifecycle: `MERGED`. On 2026-09-03, the public PR had five issue-comment records from `CLAassistant` (`User`), `sonarqubecloud[bot]` (`Bot`), `ruibaby` (`User`), `pkg-pr-new[bot]` (`Bot`), and `codecov[bot]` (`Bot`). It had two review records from maintainer `ruibaby` (`User`): `CHANGES_REQUESTED` on the initial head and `APPROVED` on the final head. Public CI has no run URL for this separate quality repository.
+Issue `#10282` current page state: `CLOSED`, lifecycle: `RESOLVED`. PR `#10283` current page state: `MERGED`, lifecycle: `MERGED`. On 2026-09-03, the public PR had five issue-comment records from `CLAassistant` (`User`), `sonarqubecloud[bot]` (`Bot`), `ruibaby` (`User`), `pkg-pr-new[bot]` (`Bot`), and `codecov[bot]` (`Bot`). It had two review records from maintainer `ruibaby` (`User`): `CHANGES_REQUESTED` on the initial head and `APPROVED` on the final head. The separate quality repository's pull request [#1](https://github.com/yvqi233/halo-quality-engineering/pull/1) later completed public [Layered quality gate run 33732942394](https://github.com/yvqi233/halo-quality-engineering/actions/runs/33732942394) successfully.
 
 ## Modification History
 
