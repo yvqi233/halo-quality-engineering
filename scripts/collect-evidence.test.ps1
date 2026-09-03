@@ -8,6 +8,7 @@ $fakeDockerScript = Join-Path $testRoot 'fake-docker.ps1'
 $originalDockerCli = $env:DOCKER_CLI
 $originalPath = $env:PATH
 $originalFakeDockerFailure = $env:HALO_QE_FAKE_DOCKER_FAIL
+$currentPowerShell = (Get-Process -Id $PID).Path
 
 function Assert-Contains {
     param([string]$Text, [string]$Expected)
@@ -38,7 +39,10 @@ function Assert-Match {
 }
 
 function Invoke-CollectorHarness {
-    param([string]$ArtifactRoot)
+    param(
+        [string]$ArtifactRoot,
+        [string]$HealthUri = 'http://127.0.0.1:1/health'
+    )
 
     $probeInput = @'
 probe-auth-before Authorization: Basic probe~basic probe-auth-after
@@ -67,8 +71,8 @@ probe-local-before halo-qe-local probe-local-after
     $savedErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $collector `
-            -ArtifactRoot $ArtifactRoot -HealthUri 'http://127.0.0.1:1/health' `
+        $output = @(& $currentPowerShell -NoProfile -ExecutionPolicy Bypass -File $collector `
+            -ArtifactRoot $ArtifactRoot -HealthUri $HealthUri `
             -ProbeInput $probeInput 2>&1)
         $exitCode = $LASTEXITCODE
     } finally {
@@ -79,7 +83,7 @@ probe-local-before halo-qe-local probe-local-after
 
 try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
-    Set-Content -LiteralPath $fakeDockerScript -Encoding utf8 -Value @'
+    [IO.File]::WriteAllText($fakeDockerScript, @'
 if ($env:HALO_QE_FAKE_DOCKER_FAIL -eq '1') {
     $command = $args -join ' '
     if ($command -match ' ps --format json$') {
@@ -122,7 +126,7 @@ Write-Output '{"before":"json-storage-before","storageState":"json-storage-value
 Write-Output 'fixed-before HaloQE!2026 fixed-after'
 Write-Output 'local-before halo-qe-local local-after'
 Write-Output 'diagnostic: 你好'
-'@
+'@, [Text.UTF8Encoding]::new($true))
     Set-Content -LiteralPath $fakeDocker -Encoding ascii -Value @'
 @echo off
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0fake-docker.ps1" %*
@@ -132,6 +136,92 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0fake-docker.ps1" %
     $environmentArtifacts = Join-Path $testRoot 'from-env'
     $environmentResult = Invoke-CollectorHarness $environmentArtifacts
     if ($environmentResult.exitCode -ne 0) { throw "Collector harness failed with exit $($environmentResult.exitCode)." }
+
+    $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    $portProbe.Start()
+    $healthPort = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
+    $portProbe.Stop()
+    $healthReady = Join-Path $testRoot 'health-server.ready'
+    $healthJob = Start-Job -ScriptBlock {
+        param([int]$Port, [string]$ReadyPath, [bool]$IncludeRedirect)
+
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+        try {
+            $listener.Start()
+            [IO.File]::WriteAllText($ReadyPath, 'ready')
+            $responseKinds = if ($IncludeRedirect) { @('unauthorized', 'redirect') } else { @('unauthorized') }
+            foreach ($responseKind in $responseKinds) {
+                $client = $listener.AcceptTcpClient()
+                try {
+                    $stream = $client.GetStream()
+                    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+                    try {
+                        while ($reader.ReadLine()) { }
+                    } finally {
+                        $reader.Dispose()
+                    }
+                    if ($responseKind -eq 'unauthorized') {
+                        $body = '{"token":"health-secret","message":"denied"}'
+                        $statusLine = 'HTTP/1.1 401 Unauthorized'
+                        $extraHeaders = 'Content-Type: application/json'
+                    } else {
+                        $body = ''
+                        $statusLine = 'HTTP/1.1 302 Found'
+                        $extraHeaders = 'Location: /console/'
+                    }
+                    $bodyBytes = [Text.Encoding]::UTF8.GetBytes($body)
+                    $headers = "$statusLine`r`n$extraHeaders`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+                    $headerBytes = [Text.Encoding]::ASCII.GetBytes($headers)
+                    $stream.Write($headerBytes, 0, $headerBytes.Length)
+                    if ($bodyBytes.Length -gt 0) {
+                        $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+                    }
+                    $stream.Flush()
+                } finally {
+                    $client.Dispose()
+                }
+            }
+        } finally {
+            $listener.Stop()
+        }
+    } -ArgumentList $healthPort, $healthReady, ($PSVersionTable.PSVersion.Major -ge 7)
+    try {
+        $readyDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $healthReady)) {
+            if ([DateTime]::UtcNow -ge $readyDeadline) { throw 'Timed out starting the local health server.' }
+            Start-Sleep -Milliseconds 25
+        }
+        $httpArtifacts = Join-Path $testRoot 'from-http-error'
+        $httpResult = Invoke-CollectorHarness $httpArtifacts -HealthUri "http://127.0.0.1:$healthPort/health"
+        if ($httpResult.exitCode -ne 0) { throw "HTTP error collector harness failed with exit $($httpResult.exitCode): $($httpResult.output)" }
+        $healthEvidence = Get-Content -Raw -LiteralPath (Join-Path $httpArtifacts 'health.json') -Encoding utf8
+        Assert-Contains $healthEvidence '401'
+        Assert-Contains $healthEvidence 'denied'
+        Assert-Contains $healthEvidence '[REDACTED]'
+        Assert-NotContains $healthEvidence 'health-secret'
+
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $redirectArtifacts = Join-Path $testRoot 'from-empty-redirect'
+            $redirectResult = Invoke-CollectorHarness $redirectArtifacts -HealthUri "http://127.0.0.1:$healthPort/redirect"
+            if ($redirectResult.exitCode -ne 0) {
+                throw "Empty redirect collector harness failed with exit $($redirectResult.exitCode): $($redirectResult.output)"
+            }
+            $redirectEvidence = Get-Content -Raw -LiteralPath (Join-Path $redirectArtifacts 'health.json') -Encoding utf8
+            $redirectRecord = $redirectEvidence | ConvertFrom-Json
+            if ([int]$redirectRecord.statusCode -ne 302 -or $redirectRecord.body -isnot [string] -or $redirectRecord.body.Length -ne 0) {
+                $actualBodyType = if ($null -eq $redirectRecord.body) { 'null' } else { $redirectRecord.body.GetType().FullName }
+                throw "Expected HTTP 302 with an empty string body, observed status $($redirectRecord.statusCode) and body type ${actualBodyType}: $redirectEvidence"
+            }
+        }
+        $completedHealthJob = Wait-Job -Job $healthJob -Timeout 10
+        if ($null -eq $completedHealthJob -or $healthJob.State -ne 'Completed') {
+            throw 'Local health server did not finish serving the collector requests.'
+        }
+        Receive-Job -Job $healthJob -ErrorAction Stop | Out-Null
+    } finally {
+        Stop-Job -Job $healthJob -ErrorAction SilentlyContinue
+        Remove-Job -Job $healthJob -Force -ErrorAction SilentlyContinue
+    }
 
     Remove-Item Env:DOCKER_CLI
     $env:PATH = "$testRoot;$originalPath"

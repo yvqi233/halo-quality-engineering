@@ -5,7 +5,7 @@ function Get-JUnitCases {
 
     $files = @(Get-ChildItem -LiteralPath $Path -Filter '*.xml' -File -ErrorAction SilentlyContinue)
     if ($files.Count -eq 0) { throw "No JUnit XML files found at $Path." }
-    $cases = [Collections.Generic.List[object]]::new()
+    $cases = @()
     foreach ($file in $files) {
         [xml]$document = Get-Content -Raw -LiteralPath $file.FullName
         foreach ($testcase in @($document.SelectNodes('//testcase'))) {
@@ -17,14 +17,14 @@ function Get-JUnitCases {
             if ($outcomes.Count -gt 1) {
                 throw "JUnit testcase '$($testcase.name)' has multiple terminal outcomes."
             }
-            [void]$cases.Add([pscustomobject]@{
+            $cases += [pscustomobject]@{
                 name = [string]$testcase.name
                 classname = [string]$testcase.classname
                 outcome = if ($outcomes.Count -eq 0) { 'PASS' } else { $outcomes[0] }
-            })
+            }
         }
     }
-    return @($cases)
+    return $cases
 }
 
 function Assert-AllCasesPassed {

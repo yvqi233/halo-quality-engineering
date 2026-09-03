@@ -51,6 +51,7 @@ function Protect-Value {
 
     if ($null -eq $Value) { return $null }
     if ($Value -is [string]) {
+        if ($Value.Length -eq 0) { return '' }
         try {
             return Protect-Value (ConvertFrom-Json -InputObject $Value -ErrorAction Stop)
         } catch {
@@ -137,6 +138,27 @@ function Invoke-ComposeDiagnostic {
     }
 }
 
+function Get-HttpResponseBody {
+    param([object]$Response, [AllowNull()][string]$ErrorDetailsBody)
+
+    if (-not [string]::IsNullOrWhiteSpace($ErrorDetailsBody)) { return $ErrorDetailsBody }
+    $contentProperty = $Response.PSObject.Properties['Content']
+    if ($null -ne $contentProperty -and $null -ne $contentProperty.Value) {
+        $readMethod = $contentProperty.Value.PSObject.Methods['ReadAsStringAsync']
+        if ($null -ne $readMethod) {
+            try {
+                return $contentProperty.Value.ReadAsStringAsync().GetAwaiter().GetResult()
+            } catch {
+                return ''
+            }
+        }
+    }
+    $streamMethod = $Response.PSObject.Methods['GetResponseStream']
+    if ($null -eq $streamMethod) { return '' }
+    $reader = New-Object System.IO.StreamReader($Response.GetResponseStream())
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+}
+
 function Get-HealthDiagnostic {
     $record = [ordered]@{ uri = $HealthUri }
     try {
@@ -149,8 +171,7 @@ function Get-HealthDiagnostic {
             $response = $_.Exception.Response
             $record.statusCode = [int]$response.StatusCode
             $record.headers = $response.Headers
-            $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
-            try { $record.body = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            $record.body = Get-HttpResponseBody -Response $response -ErrorDetailsBody $_.ErrorDetails.Message
         } else {
             $record.error = $_.Exception.Message
         }

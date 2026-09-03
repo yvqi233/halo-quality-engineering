@@ -20,30 +20,28 @@ function ConvertTo-StableJsonValue {
     if ($Value -is [System.Collections.IDictionary]) {
         $ordered = [ordered]@{}
         foreach ($key in @($Value.Keys | Sort-Object)) {
-            $ordered[[string]$key] = ConvertTo-StableJsonValue -Value $Value[$key]
+            $ordered[[string]$key] = (ConvertTo-StableJsonValue -Value $Value[$key]).Value
         }
-        Write-Output -NoEnumerate $ordered
-        return
+        return [pscustomobject]@{ Value = $ordered }
     }
 
     if ($Value -is [System.Management.Automation.PSCustomObject]) {
         $ordered = [ordered]@{}
         foreach ($property in @($Value.PSObject.Properties | Sort-Object Name)) {
-            $ordered[$property.Name] = ConvertTo-StableJsonValue -Value $property.Value
+            $ordered[$property.Name] = (ConvertTo-StableJsonValue -Value $property.Value).Value
         }
-        Write-Output -NoEnumerate $ordered
-        return
+        return [pscustomobject]@{ Value = $ordered }
     }
 
     if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
         $items = [System.Collections.Generic.List[object]]::new()
         foreach ($item in $Value) {
-            [void]$items.Add((ConvertTo-StableJsonValue -Value $item))
+            [void]$items.Add((ConvertTo-StableJsonValue -Value $item).Value)
         }
-        return ,([object[]]($items.ToArray()))
+        return [pscustomobject]@{ Value = [object[]]$items.ToArray() }
     }
 
-    Write-Output -NoEnumerate $Value
+    return [pscustomobject]@{ Value = $Value }
 }
 
 if ((Test-Path -LiteralPath $BaselinePath) -and -not $AcceptReviewedBaseline) {
@@ -56,7 +54,7 @@ if ([int]$response.StatusCode -ne 200) {
 }
 
 $document = $response.Content | ConvertFrom-Json
-$stableDocument = ConvertTo-StableJsonValue -Value $document
+$stableDocument = (ConvertTo-StableJsonValue -Value $document).Value
 $json = $stableDocument | ConvertTo-Json -Depth 100
 
 New-Item -ItemType Directory -Force (Split-Path -Parent $BaselinePath) | Out-Null

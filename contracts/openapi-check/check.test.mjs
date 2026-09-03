@@ -14,7 +14,8 @@ const read = (name) => JSON.parse(readFileSync(new URL(name, fixturesDirectory),
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const checkPath = join(repositoryRoot, 'contracts/openapi-check/check.mjs');
 const capturePath = join(repositoryRoot, 'scripts/capture-openapi.ps1');
-const powerShellHost = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+const powerShellHost = process.env.HALO_QE_POWERSHELL_HOST
+  ?? (process.platform === 'win32' ? 'powershell.exe' : 'pwsh');
 const powerShellAvailable = (() => {
   const probe = spawnSync(powerShellHost, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion'], {
     windowsHide: true

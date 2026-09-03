@@ -73,6 +73,106 @@ $greenLayers = @(
 $greenOutcome = Get-GateOutcome -RequestedLayer All -RequestedCount 3 -Results $greenLayers
 Assert-True ($greenOutcome.result -eq 'PASS' -and $greenOutcome.exitCode -eq 0) 'Three formal green layers must return exit 0.'
 Assert-True ($greenOutcome.durationSeconds -eq 6.6) 'Formal All duration must be the measured layer sum.'
+$orchestrationRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-gate-orchestration-$([Guid]::NewGuid().ToString('N'))"
+$orchestrationFunctionNames = @(
+    'Invoke-LayerPhase', 'Remove-SafeTree', 'Invoke-NativeCommand', 'Get-JUnitCases',
+    'Get-QuarantineEntries', 'Invoke-OpenApiComparison', 'Write-Counts', 'Invoke-Playwright',
+    'Write-PlaywrightInventory', 'Write-L2Lifecycle'
+)
+$originalOrchestrationFunctions = @{}
+foreach ($functionName in $orchestrationFunctionNames) {
+    $originalOrchestrationFunctions[$functionName] = (Get-Item "Function:$functionName").ScriptBlock
+}
+$originalArtifactRoot = $artifactRoot
+$originalSummaryPath = $summaryPath
+try {
+    New-Item -ItemType Directory -Force -Path $orchestrationRoot | Out-Null
+    $script:artifactRoot = Join-Path $orchestrationRoot 'artifacts/quality-gate'
+    $script:summaryPath = Join-Path $artifactRoot 'summary.jsonl'
+    function Invoke-LayerPhase {
+        param(
+            [string]$Name,
+            [string]$SessionTimeout,
+            [string]$PhaseArtifactRoot,
+            [scriptblock]$Body,
+            [object]$BodyContext
+        )
+
+        & $Body $PhaseArtifactRoot $BodyContext
+        return [pscustomobject]@{
+            result = 'PASS'
+            durationSeconds = 0.1
+            failureKind = 'NONE'
+            primaryMessage = $null
+            secondaryMessages = @()
+        }
+    }
+    function Remove-SafeTree { param([string]$Path) }
+    function Invoke-NativeCommand {
+        param([string]$FilePath, [string[]]$Arguments, [string]$Description)
+    }
+    function Get-JUnitCases {
+        param([string]$Path)
+
+        if ($Path -match 'integrationTest') {
+            $ExpectedApiScenarioIds | ForEach-Object {
+                [pscustomobject]@{ name = "$_ scenario"; classname = 'fixture'; outcome = 'PASS' }
+            }
+            return [pscustomobject]@{ name = 'environment fixture'; classname = 'fixture'; outcome = 'PASS' }
+        }
+        if ($Path -match '[\\/]expiry$') {
+            return [pscustomobject]@{ name = 'E10 expiry'; classname = 'fixture'; outcome = 'PASS' }
+        }
+        if ($Path -match '[\\/]ordinary$') {
+            @($ExpectedJourneyIds[0..8]) + @('I01', 'I02') | ForEach-Object {
+                [pscustomobject]@{ name = "$_ journey"; classname = 'fixture'; outcome = 'PASS' }
+            }
+            return
+        }
+        return [pscustomobject]@{ name = 'unit fixture'; classname = 'fixture'; outcome = 'PASS' }
+    }
+    function Get-QuarantineEntries { param([string]$LayerArtifactRoot) }
+    function Invoke-OpenApiComparison { param([string]$LayerArtifactRoot) }
+    function Write-Counts {
+        param([string]$Path, [Collections.Specialized.OrderedDictionary]$Counts)
+    }
+    function Invoke-Playwright {
+        param([string]$ArtifactPath, [string[]]$Arguments, [string]$Description)
+    }
+    function Write-PlaywrightInventory { param([string]$LayerRoot) }
+    function Write-L2Lifecycle {
+        param([string]$Path, [Collections.Specialized.OrderedDictionary]$Lifecycle)
+    }
+
+    $orchestrationFailures = @()
+    foreach ($layerName in @('L0', 'L1', 'L2')) {
+        try {
+            $layerResult = & "Invoke-$layerName"
+            if ($layerResult.result -ne 'PASS') {
+                $orchestrationFailures += "$layerName returned $($layerResult.result)."
+            }
+        } catch {
+            $orchestrationFailures += "$layerName orchestration: $($_.Exception.Message)"
+        }
+    }
+    try {
+        $singleLayerOutcome = Invoke-QualityGate -RequestedLayer L0
+        if ($singleLayerOutcome.result -ne 'PASS' -or $singleLayerOutcome.exitCode -ne 0) {
+            $orchestrationFailures += 'Single-layer gate aggregation did not return PASS/0.'
+        }
+    } catch {
+        $orchestrationFailures += "Single-layer gate aggregation: $($_.Exception.Message)"
+    }
+    Assert-True ($orchestrationFailures.Count -eq 0) `
+        "Layer bodies and result aggregation must execute in PowerShell 7: $($orchestrationFailures -join '; ')"
+} finally {
+    foreach ($functionName in $orchestrationFunctionNames) {
+        Set-Item "Function:$functionName" -Value $originalOrchestrationFunctions[$functionName]
+    }
+    $script:artifactRoot = $originalArtifactRoot
+    $script:summaryPath = $originalSummaryPath
+    Remove-Item -LiteralPath $orchestrationRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 $junitOutcomeRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-junit-outcomes-$([Guid]::NewGuid().ToString('N'))"
 try {
     New-Item -ItemType Directory -Force -Path $junitOutcomeRoot | Out-Null
@@ -372,5 +472,54 @@ try {
 $artifactNames = [regex]::Matches("$prWorkflow`n$nightlyWorkflow", '(?m)^\s+name:\s+((?:l[0-3]|nightly)-[a-z0-9-]+)\s*$') |
     ForEach-Object { $_.Groups[1].Value }
 Assert-True ($artifactNames.Count -eq (@($artifactNames | Sort-Object -Unique).Count)) 'Workflow artifact names must be globally distinct.'
+
+$phaseRoot = Join-Path ([IO.Path]::GetTempPath()) "halo-gate-phase-$([Guid]::NewGuid().ToString('N'))"
+$originalPhaseCounter = $env:HALO_QE_TEST_DOWN_COUNT
+try {
+    $phaseScripts = Join-Path $phaseRoot 'scripts'
+    New-Item -ItemType Directory -Force -Path $phaseScripts | Out-Null
+    Copy-Item -LiteralPath $runnerPath -Destination (Join-Path $phaseScripts 'quality-gate.ps1')
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'junit-results.ps1') -Destination $phaseScripts
+    Set-Content -LiteralPath (Join-Path $phaseScripts 'environment.ps1') -Encoding utf8 -Value @'
+[CmdletBinding()]
+param([string]$Action)
+if ($Action -eq 'Down') {
+    $count = if ($env:HALO_QE_TEST_DOWN_COUNT) { [int]$env:HALO_QE_TEST_DOWN_COUNT } else { 0 }
+    $env:HALO_QE_TEST_DOWN_COUNT = [string]($count + 1)
+    if ($count -ge 1) { throw 'teardown sentinel' }
+}
+'@
+    Set-Content -LiteralPath (Join-Path $phaseScripts 'collect-evidence.ps1') -Encoding utf8 -Value @'
+[CmdletBinding()]
+param([string]$ArtifactRoot)
+throw 'collector sentinel'
+'@
+    Remove-Item Env:HALO_QE_TEST_DOWN_COUNT -ErrorAction SilentlyContinue
+    . (Join-Path $phaseScripts 'quality-gate.ps1')
+    $phaseFailure = $null
+    try {
+        $phaseResult = Invoke-LayerPhase -Name 'compatibility' -SessionTimeout 'PT1M' `
+            -PhaseArtifactRoot (Join-Path $phaseRoot 'artifacts') -Body {
+                param($currentPhaseRoot, $context)
+                Set-GateFailureKind 'PRODUCT'
+                throw 'primary sentinel'
+            }
+    } catch {
+        $phaseFailure = $_.Exception.Message
+    }
+    Assert-True ($null -eq $phaseFailure) `
+        "Layer failure aggregation must not throw in PowerShell 7: $phaseFailure"
+    Assert-True ($phaseResult.result -eq 'FAIL' -and $phaseResult.failureKind -eq 'PRODUCT') `
+        'Layer failure aggregation must preserve the primary result and attribution.'
+    Assert-True ($phaseResult.secondaryMessages.Count -eq 2) `
+        'Layer failure aggregation must retain collector and teardown failures as secondary evidence.'
+} finally {
+    if ($null -eq $originalPhaseCounter) {
+        Remove-Item Env:HALO_QE_TEST_DOWN_COUNT -ErrorAction SilentlyContinue
+    } else {
+        $env:HALO_QE_TEST_DOWN_COUNT = $originalPhaseCounter
+    }
+    Remove-Item -LiteralPath $phaseRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Write-Output 'quality-gate hermetic/static tests passed'

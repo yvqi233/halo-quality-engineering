@@ -103,9 +103,9 @@ function Invoke-EnvironmentAction {
 }
 
 function Invoke-GateBody {
-    param([scriptblock]$Body, [string]$PhaseArtifactRoot)
+    param([scriptblock]$Body, [string]$PhaseArtifactRoot, [object]$BodyContext)
 
-    & $Body $PhaseArtifactRoot
+    & $Body $PhaseArtifactRoot $BodyContext
 }
 
 function Set-GateFailureKind {
@@ -131,7 +131,8 @@ function Get-JavaFailureKind {
             if ((Compare-Object $expectedFields $actualFields).Count -ne 0) {
                 throw 'Classification record schema is invalid.'
             }
-            if ($record.schemaVersion -isnot [int] -or $record.schemaVersion -ne 1) {
+            if (($record.schemaVersion -isnot [int] -and $record.schemaVersion -isnot [long]) -or
+                [long]$record.schemaVersion -ne 1) {
                 throw 'Classification schemaVersion must be integer 1.'
             }
             foreach ($field in @('testId', 'testClass', 'testMethod', 'failureKind')) {
@@ -156,7 +157,8 @@ function Invoke-LayerPhase {
         [string]$Name,
         [string]$SessionTimeout,
         [string]$PhaseArtifactRoot,
-        [scriptblock]$Body
+        [scriptblock]$Body,
+        [object]$BodyContext
     )
 
     New-Item -ItemType Directory -Force -Path $PhaseArtifactRoot | Out-Null
@@ -164,7 +166,7 @@ function Invoke-LayerPhase {
     $primaryMessage = $null
     $primaryKind = 'NONE'
     Set-GateFailureKind 'ENVIRONMENT'
-    $secondaryMessages = [Collections.Generic.List[string]]::new()
+    $secondaryMessages = @()
     $previousTimeout = $env:HALO_SESSION_TIMEOUT
 
     try {
@@ -173,7 +175,7 @@ function Invoke-LayerPhase {
             Invoke-EnvironmentAction -Action Down
             Invoke-EnvironmentAction -Action Up
             Invoke-EnvironmentAction -Action Initialize
-            Invoke-GateBody -Body $Body -PhaseArtifactRoot $PhaseArtifactRoot
+            Invoke-GateBody -Body $Body -PhaseArtifactRoot $PhaseArtifactRoot -BodyContext $BodyContext
         } catch {
             $primaryMessage = $_.Exception.Message
             $primaryKind = $script:GateFailureKind
@@ -188,7 +190,7 @@ function Invoke-LayerPhase {
                 $primaryMessage = $message
                 $primaryKind = 'TEST_TOOL'
             } else {
-                [void]$secondaryMessages.Add($message)
+                $secondaryMessages += $message
             }
         }
 
@@ -201,7 +203,7 @@ function Invoke-LayerPhase {
                 $primaryMessage = $message
                 $primaryKind = 'ENVIRONMENT'
             } else {
-                [void]$secondaryMessages.Add($message)
+                $secondaryMessages += $message
             }
         }
     } finally {
@@ -220,13 +222,13 @@ function Invoke-LayerPhase {
         }
     }
 
-    Write-Output -NoEnumerate ([pscustomobject]@{
+    return [pscustomobject]@{
         result = if ($null -eq $primaryMessage) { 'PASS' } else { 'FAIL' }
         durationSeconds = [Math]::Round($watch.Elapsed.TotalSeconds, 3)
         failureKind = $primaryKind
         primaryMessage = $primaryMessage
-        secondaryMessages = @($secondaryMessages)
-    })
+        secondaryMessages = $secondaryMessages
+    }
 }
 
 function Get-QuarantineEntries {
@@ -307,26 +309,32 @@ function Invoke-L0 {
     $layerRoot = Join-Path $artifactRoot 'L0'
     Remove-SafeTree $layerRoot
     New-Item -ItemType Directory -Force -Path $layerRoot | Out-Null
+    $bodyContext = [pscustomobject]@{
+        repoRoot = $repoRoot
+        gradleCommand = $gradleCommand
+        layerRoot = $layerRoot
+    }
     $body = {
-        param($phaseRoot)
+        param($phaseRoot, $context)
 
         Set-GateFailureKind 'TEST_TOOL'
-        Remove-SafeTree (Join-Path $repoRoot 'api-tests/build/classes/java/test')
-        Remove-SafeTree (Join-Path $repoRoot 'api-tests/build/test-results/test')
-        Remove-SafeTree (Join-Path $repoRoot 'api-tests/build/reports/tests/test')
-        Invoke-NativeCommand -FilePath $gradleCommand -Arguments @(':api-tests:compileTestJava', ':api-tests:test') -Description 'L0 Java compile/unit'
-        $unitCases = @(Get-JUnitCases (Join-Path $repoRoot 'api-tests/build/test-results/test'))
+        Remove-SafeTree (Join-Path $context.repoRoot 'api-tests/build/classes/java/test')
+        Remove-SafeTree (Join-Path $context.repoRoot 'api-tests/build/test-results/test')
+        Remove-SafeTree (Join-Path $context.repoRoot 'api-tests/build/reports/tests/test')
+        Invoke-NativeCommand -FilePath $context.gradleCommand -Arguments @(':api-tests:compileTestJava', ':api-tests:test') -Description 'L0 Java compile/unit'
+        $unitCases = @(Get-JUnitCases (Join-Path $context.repoRoot 'api-tests/build/test-results/test'))
         Assert-AllCasesPassed -Cases $unitCases -Description 'L0 Java unit suite'
-        $entries = @(Get-QuarantineEntries $layerRoot)
+        $entries = @(Get-QuarantineEntries $context.layerRoot)
         Set-GateFailureKind 'CONTRACT'
-        Invoke-OpenApiComparison $layerRoot
-        Write-Counts -Path (Join-Path $layerRoot 'counts.json') -Counts ([ordered]@{
+        Invoke-OpenApiComparison $context.layerRoot
+        Write-Counts -Path (Join-Path $context.layerRoot 'counts.json') -Counts ([ordered]@{
             unitTests = $unitCases.Count
             quarantinedCases = $entries.Count
             contractFindings = 0
         })
-    }.GetNewClosure()
-    $phase = Invoke-LayerPhase -Name 'L0' -SessionTimeout 'PT30M' -PhaseArtifactRoot $layerRoot -Body $body
+    }
+    $phase = Invoke-LayerPhase -Name 'L0' -SessionTimeout 'PT30M' -PhaseArtifactRoot $layerRoot `
+        -Body $body -BodyContext $bodyContext
     return Complete-Layer -Name 'L0' -ArtifactName 'contract' -Phases @($phase)
 }
 
@@ -334,54 +342,61 @@ function Invoke-L1 {
     $layerRoot = Join-Path $artifactRoot 'L1'
     Remove-SafeTree $layerRoot
     New-Item -ItemType Directory -Force -Path $layerRoot | Out-Null
+    $bodyContext = [pscustomobject]@{
+        repoRoot = $repoRoot
+        gradleCommand = $gradleCommand
+        layerRoot = $layerRoot
+        expectedApiScenarioIds = $ExpectedApiScenarioIds
+        apiTestPatterns = $ApiTestPatterns
+    }
     $body = {
-        param($phaseRoot)
+        param($phaseRoot, $context)
 
         Set-GateFailureKind 'TEST_TOOL'
-        $entries = @(Get-QuarantineEntries $layerRoot)
-        $excluded = @(Get-ExcludedIds -Entries $entries -AllowedIds $ExpectedApiScenarioIds)
-        $selectedIds = @($ExpectedApiScenarioIds | Where-Object { $_ -notin $excluded })
-        Remove-SafeTree (Join-Path $repoRoot 'api-tests/build/evidence')
-        $javaClassificationPath = Join-Path $repoRoot 'api-tests/build/failure-classification/integrationTest.jsonl'
+        $entries = @(Get-QuarantineEntries $context.layerRoot)
+        $excluded = @(Get-ExcludedIds -Entries $entries -AllowedIds $context.expectedApiScenarioIds)
+        $selectedIds = @($context.expectedApiScenarioIds | Where-Object { $_ -notin $excluded })
+        Remove-SafeTree (Join-Path $context.repoRoot 'api-tests/build/evidence')
+        $javaClassificationPath = Join-Path $context.repoRoot 'api-tests/build/failure-classification/integrationTest.jsonl'
         Remove-SafeTree $javaClassificationPath
-        $arguments = [Collections.Generic.List[string]]::new()
-        [void]$arguments.Add(':api-tests:integrationTest')
+        $arguments = @(':api-tests:integrationTest')
         if ($excluded.Count -gt 0) {
-            [void]$arguments.Add('--tests')
-            [void]$arguments.Add('*HaloApiContractIT')
+            $arguments += '--tests'
+            $arguments += '*HaloApiContractIT'
             foreach ($id in $selectedIds) {
-                [void]$arguments.Add('--tests')
-                [void]$arguments.Add($ApiTestPatterns[$id])
+                $arguments += '--tests'
+                $arguments += $context.apiTestPatterns[$id]
             }
         }
         try {
-            Invoke-NativeCommand -FilePath $gradleCommand -Arguments @($arguments) -Description 'L1 API matrix'
+            Invoke-NativeCommand -FilePath $context.gradleCommand -Arguments $arguments -Description 'L1 API matrix'
         } catch {
             if (Test-Path -LiteralPath $javaClassificationPath -PathType Leaf) {
                 Copy-Item -LiteralPath $javaClassificationPath `
-                    -Destination (Join-Path $layerRoot 'failure-classification.jsonl') -Force
+                    -Destination (Join-Path $context.layerRoot 'failure-classification.jsonl') -Force
             }
             Set-GateFailureKind (Get-JavaFailureKind -Path $javaClassificationPath)
             throw
         }
         if (Test-Path -LiteralPath $javaClassificationPath -PathType Leaf) {
             Copy-Item -LiteralPath $javaClassificationPath `
-                -Destination (Join-Path $layerRoot 'failure-classification.jsonl') -Force
+                -Destination (Join-Path $context.layerRoot 'failure-classification.jsonl') -Force
             Set-GateFailureKind 'TEST_TOOL'
             throw 'Passing L1 Gradle execution produced failure-classification records.'
         }
         Set-GateFailureKind 'TEST_TOOL'
-        $cases = @(Get-JUnitCases (Join-Path $repoRoot 'api-tests/build/test-results/integrationTest'))
+        $cases = @(Get-JUnitCases (Join-Path $context.repoRoot 'api-tests/build/test-results/integrationTest'))
         Assert-ExactIds -Cases $cases -ExpectedIds $selectedIds -PrefixPattern '[APR]\d{2}' -Description 'L1 API scenario'
         $infrastructure = @($cases | Where-Object { $_.name -notmatch '^[APR]\d{2}\s' })
         if ($infrastructure.Count -ne 1) { throw "L1 expected 1 infrastructure record, observed $($infrastructure.Count)." }
-        Write-Counts -Path (Join-Path $layerRoot 'counts.json') -Counts ([ordered]@{
+        Write-Counts -Path (Join-Path $context.layerRoot 'counts.json') -Counts ([ordered]@{
             apiScenarios = $selectedIds.Count
             infrastructure = $infrastructure.Count
             quarantinedExcluded = $excluded
         })
-    }.GetNewClosure()
-    $phase = Invoke-LayerPhase -Name 'L1' -SessionTimeout 'PT30M' -PhaseArtifactRoot $layerRoot -Body $body
+    }
+    $phase = Invoke-LayerPhase -Name 'L1' -SessionTimeout 'PT30M' -PhaseArtifactRoot $layerRoot `
+        -Body $body -BodyContext $bodyContext
     return Complete-Layer -Name 'L1' -ArtifactName 'api-smoke' -Phases @($phase)
 }
 
@@ -471,39 +486,46 @@ function Invoke-L2 {
         infrastructureCount = 0
         expiryCount = 0
     }
+    $bodyContext = [pscustomobject]@{
+        layerRoot = $layerRoot
+        lifecycle = $l2Lifecycle
+        lifecyclePath = $lifecyclePath
+        state = $l2State
+        expectedJourneyIds = $ExpectedJourneyIds
+    }
 
     $ordinaryBody = {
-        param($phaseRoot)
+        param($phaseRoot, $context)
 
         Set-GateFailureKind 'TEST_TOOL'
-        $l2State.entries = @(Get-QuarantineEntries $layerRoot)
-        $l2State.excluded = @(Get-ExcludedIds -Entries $l2State.entries -AllowedIds $ExpectedJourneyIds)
-        $selected = @($ExpectedJourneyIds[0..8] | Where-Object { $_ -notin $l2State.excluded })
-        $l2State.ordinaryCount = $selected.Count
-        $excludedPattern = @('@session-expiry') + @($l2State.excluded | Where-Object { $_ -ne 'E10' })
+        $context.state.entries = @(Get-QuarantineEntries $context.layerRoot)
+        $context.state.excluded = @(Get-ExcludedIds -Entries $context.state.entries -AllowedIds $context.expectedJourneyIds)
+        $selected = @($context.expectedJourneyIds[0..8] | Where-Object { $_ -notin $context.state.excluded })
+        $context.state.ordinaryCount = $selected.Count
+        $excludedPattern = @('@session-expiry') + @($context.state.excluded | Where-Object { $_ -ne 'E10' })
         Set-GateFailureKind 'PRODUCT'
-        $l2Lifecycle.ordinary.playwright.attempted = $true
-        $l2Lifecycle.ordinary.playwright.result = 'RUNNING'
-        Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+        $context.lifecycle.ordinary.playwright.attempted = $true
+        $context.lifecycle.ordinary.playwright.result = 'RUNNING'
+        Write-L2Lifecycle -Path $context.lifecyclePath -Lifecycle $context.lifecycle
         try {
-            Invoke-Playwright -ArtifactPath (Join-Path $layerRoot 'ordinary') `
+            Invoke-Playwright -ArtifactPath (Join-Path $context.layerRoot 'ordinary') `
                 -Arguments @('test', '--project=chromium', '--grep-invert', ($excludedPattern -join '|')) `
                 -Description 'L2 ordinary Chromium journeys'
-            $l2Lifecycle.ordinary.playwright.result = 'PASS'
+            $context.lifecycle.ordinary.playwright.result = 'PASS'
         } catch {
-            $l2Lifecycle.ordinary.playwright.result = 'FAIL'
+            $context.lifecycle.ordinary.playwright.result = 'FAIL'
             throw
         } finally {
-            $l2Lifecycle.ordinary.playwright.completed = $true
-            Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+            $context.lifecycle.ordinary.playwright.completed = $true
+            Write-L2Lifecycle -Path $context.lifecyclePath -Lifecycle $context.lifecycle
         }
         Set-GateFailureKind 'TEST_TOOL'
-        $cases = @(Get-JUnitCases (Join-Path $layerRoot 'ordinary'))
+        $cases = @(Get-JUnitCases (Join-Path $context.layerRoot 'ordinary'))
         $expectedOrdinaryIds = @($selected) + @('I01', 'I02')
         Assert-ExactCaseInventory -Cases $cases -ExpectedIds $expectedOrdinaryIds `
             -PrefixPattern '(?:E|I)\d{2}' -Description 'L2 ordinary journey and infrastructure'
-        $l2State.infrastructureCount = 2
-    }.GetNewClosure()
+        $context.state.infrastructureCount = 2
+    }
 
     $ordinaryPhase = $null
     $l2Lifecycle.ordinary.environment.attempted = $true
@@ -511,54 +533,55 @@ function Invoke-L2 {
     Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
     try {
         $ordinaryPhase = Invoke-LayerPhase -Name 'L2-ordinary' -SessionTimeout 'PT30M' `
-            -PhaseArtifactRoot (Join-Path $layerRoot 'ordinary-phase') -Body $ordinaryBody
+            -PhaseArtifactRoot (Join-Path $layerRoot 'ordinary-phase') -Body $ordinaryBody `
+            -BodyContext $bodyContext
     } finally {
         $l2Lifecycle.ordinary.environment.completed = $null -ne $ordinaryPhase
         $l2Lifecycle.ordinary.environment.result = if ($null -eq $ordinaryPhase) { 'FAIL' } else { $ordinaryPhase.result }
         Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
     }
-    $phases = [Collections.Generic.List[object]]::new()
-    [void]$phases.Add($ordinaryPhase)
+    $phases = @($ordinaryPhase)
 
     if ($ordinaryPhase.result -eq 'PASS' -and 'E10' -notin $l2State.excluded) {
         $expiryBody = {
-            param($phaseRoot)
+            param($phaseRoot, $context)
 
             Set-GateFailureKind 'PRODUCT'
-            $l2Lifecycle.expiry.playwright.attempted = $true
-            $l2Lifecycle.expiry.playwright.result = 'RUNNING'
-            Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+            $context.lifecycle.expiry.playwright.attempted = $true
+            $context.lifecycle.expiry.playwright.result = 'RUNNING'
+            Write-L2Lifecycle -Path $context.lifecyclePath -Lifecycle $context.lifecycle
             try {
-                Invoke-Playwright -ArtifactPath (Join-Path $layerRoot 'expiry') `
+                Invoke-Playwright -ArtifactPath (Join-Path $context.layerRoot 'expiry') `
                     -Arguments @('test', '--project=chromium', '--grep', '@session-expiry', '--no-deps') `
                     -Description 'L2 E10 Chromium journey'
-                $l2Lifecycle.expiry.playwright.result = 'PASS'
+                $context.lifecycle.expiry.playwright.result = 'PASS'
             } catch {
-                $l2Lifecycle.expiry.playwright.result = 'FAIL'
+                $context.lifecycle.expiry.playwright.result = 'FAIL'
                 throw
             } finally {
-                $l2Lifecycle.expiry.playwright.completed = $true
-                Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
+                $context.lifecycle.expiry.playwright.completed = $true
+                Write-L2Lifecycle -Path $context.lifecyclePath -Lifecycle $context.lifecycle
             }
             Set-GateFailureKind 'TEST_TOOL'
-            $cases = @(Get-JUnitCases (Join-Path $layerRoot 'expiry'))
+            $cases = @(Get-JUnitCases (Join-Path $context.layerRoot 'expiry'))
             Assert-ExactCaseInventory -Cases $cases -ExpectedIds @('E10') `
                 -PrefixPattern 'E\d{2}' -Description 'L2 expiry journey'
-            $l2State.expiryCount = 1
-        }.GetNewClosure()
+            $context.state.expiryCount = 1
+        }
         $expiryPhase = $null
         $l2Lifecycle.expiry.environment.attempted = $true
         $l2Lifecycle.expiry.environment.result = 'RUNNING'
         Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
         try {
             $expiryPhase = Invoke-LayerPhase -Name 'L2-expiry' -SessionTimeout 'PT5S' `
-                -PhaseArtifactRoot (Join-Path $layerRoot 'expiry-phase') -Body $expiryBody
+                -PhaseArtifactRoot (Join-Path $layerRoot 'expiry-phase') -Body $expiryBody `
+                -BodyContext $bodyContext
         } finally {
             $l2Lifecycle.expiry.environment.completed = $null -ne $expiryPhase
             $l2Lifecycle.expiry.environment.result = if ($null -eq $expiryPhase) { 'FAIL' } else { $expiryPhase.result }
             Write-L2Lifecycle -Path $lifecyclePath -Lifecycle $l2Lifecycle
         }
-        [void]$phases.Add($expiryPhase)
+        $phases += $expiryPhase
     }
 
     Write-PlaywrightInventory $layerRoot
@@ -569,7 +592,7 @@ function Invoke-L2 {
         infrastructure = $l2State.infrastructureCount
         quarantinedExcluded = $l2State.excluded
     })
-    return Complete-Layer -Name 'L2' -ArtifactName 'chromium-e2e' -Phases @($phases)
+    return Complete-Layer -Name 'L2' -ArtifactName 'chromium-e2e' -Phases $phases
 }
 
 function Get-GateOutcome {
@@ -592,7 +615,7 @@ function Invoke-QualityGate {
     New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
     if (Test-Path -LiteralPath $summaryPath) { Remove-Item -LiteralPath $summaryPath -Force }
     $requestedLayers = if ($RequestedLayer -eq 'All') { @('L0', 'L1', 'L2') } else { @($RequestedLayer) }
-    $results = [Collections.Generic.List[object]]::new()
+    $results = @()
 
     foreach ($requested in $requestedLayers) {
         $result = switch ($requested) {
@@ -600,11 +623,11 @@ function Invoke-QualityGate {
             'L1' { Invoke-L1 }
             'L2' { Invoke-L2 }
         }
-        [void]$results.Add($result)
+        $results += $result
         if ($result.result -eq 'FAIL') { break }
     }
 
-    return Get-GateOutcome -RequestedLayer $RequestedLayer -RequestedCount $requestedLayers.Count -Results @($results)
+    return Get-GateOutcome -RequestedLayer $RequestedLayer -RequestedCount $requestedLayers.Count -Results $results
 }
 
 if ($MyInvocation.InvocationName -eq '.') { return }
